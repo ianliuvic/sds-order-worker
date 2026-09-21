@@ -452,7 +452,8 @@ function scheduleDaily() {
 }
 
 server.on('upgrade', (req, socket, head) => {
-  if (String(req.url || '').startsWith('/vnc/')) return proxyVncUpgrade(req, socket, head);
+  const path = String(req.url || '');
+  if (path.startsWith('/vnc/') || path === '/websockify') return proxyVncUpgrade(req, socket, head);
   socket.destroy();
 });
 
