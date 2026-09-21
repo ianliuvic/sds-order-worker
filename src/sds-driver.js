@@ -1,0 +1,191 @@
+/** SDS 设计器驱动：把一个 intake 的拍平面逐片注入 → 保存 → 选尺码数量 → 加入购物车
+ *
+ * 说明：SDS 的 class 名带构建哈希（sizeItem__style-XXXX），所以选择器一律
+ * 用「class 前缀 + 文本」定位，不用整串哈希。
+ */
+import fs from 'node:fs';
+import path from 'node:path';
+
+const DESIGNER_MODE = { single: '多拼', all: '单图' };
+const SIZES = ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL'];
+const STORAGE_PATH = process.env.STORAGE_PATH || '/app/storage';
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export function designerUrl(productId, designProductId) {
+  return `https://www.sdsdiy.com/portal/detail/design/${productId}/${designProductId}`;
+}
+
+async function assertLoggedIn(page) {
+  const needsLogin = await page.evaluate(() => !!document.querySelector('input[type=password]') || /请登录|登录后/.test(document.body.innerText || ''));
+  if (needsLogin) throw new Error('sds_needs_login');
+}
+
+/** 只读：设计器当前画布上的图层数（验证拍平图确实落到了画布） */
+async function canvasLayerCount(page) {
+  return page.evaluate(() => {
+    const all = [...document.querySelectorAll('*')];
+    let seed = null;
+    for (const el of all) {
+      const key = Object.keys(el).find((k) => /^__reactInternalInstance\$/.test(k));
+      if (key) { seed = el[key]; break; }
+    }
+    if (!seed) return null;
+    let top = seed;
+    while (top && top.return) top = top.return;
+    const queue = [top];
+    let seen = 0;
+    while (queue.length && seen < 6000) {
+      const fiber = queue.shift();
+      seen += 1;
+      const node = fiber.stateNode;
+      if (node && typeof node === 'object' && typeof node.renderPSD === 'function' && node.vetrina) {
+        const store = node.store || (node.props && node.props.store);
+        const layers = store && store.canvasLayers;
+        return Array.isArray(layers) ? layers.length : (layers ? Object.keys(layers).length : null);
+      }
+      if (fiber.child) queue.push(fiber.child);
+      if (fiber.sibling) queue.push(fiber.sibling);
+    }
+    return null;
+  });
+}
+
+async function clickByText(page, pattern, { exact = false, root = null } = {}) {
+  const handle = await page.evaluateHandle(
+    ({ source, flags, exactMatch, rootSelector }) => {
+      const re = new RegExp(source, flags);
+      const scope = rootSelector ? document.querySelector(rootSelector) : document;
+      if (!scope) return null;
+      const candidates = [...scope.querySelectorAll('div,span,button,a,li,label')];
+      const visible = candidates.filter((el) => el.offsetParent !== null && (el.children.length === 0 || exactMatch));
+      const hit = visible.find((el) => {
+        const text = (el.textContent || '').trim();
+        return exactMatch ? text === source : re.test(text);
+      });
+      if (!hit) return null;
+      const clickable = hit.closest('button,[role=button],[class*=btn],div,span') || hit;
+      clickable.click();
+      return (hit.textContent || '').trim();
+    },
+    { source: pattern.source ?? String(pattern), flags: pattern.flags ?? '', exactMatch: exact, rootSelector: root }
+  );
+  const value = await handle.jsonValue();
+  await handle.dispose();
+  return value;
+}
+
+async function selectMode(page, kind) {
+  const wanted = DESIGNER_MODE[kind] ?? DESIGNER_MODE.single;
+  return page.evaluate((label) => {
+    const groups = [...document.querySelectorAll('[class*="groupItem__style"]')];
+    const target = groups.find((el) => (el.textContent || '').includes(label));
+    if (!target) return 'group_not_found';
+    if (/active__/.test(target.innerHTML)) return 'already_active';
+    const clickable = target.querySelector('[class*="name__style"]') || target;
+    clickable.click();
+    return 'clicked';
+  }, wanted);
+}
+
+async function selectFace(page, name) {
+  return page.evaluate((faceName) => {
+    const boxes = [...document.querySelectorAll('[class*="faces__style"]')];
+    const scope = boxes[0] || document.body;
+    const labels = [...scope.querySelectorAll('[class*="name__style"]')];
+    const label = labels.find((el) => (el.textContent || '').trim() === faceName);
+    if (!label) return 'face_not_found';
+    const item = label.closest('[class*="item__style"]') || label.parentElement || label;
+    if (/active__/.test((item.className || ''))) return 'already_active';
+    item.click();
+    return 'clicked';
+  }, name);
+}
+
+async function openUploadTab(page) {
+  return clickByText(page, '上传', { exact: true });
+}
+
+async function uploadSide(page, { name, mime, buffer, fileName }) {
+  const face = await selectFace(page, name);
+  await sleep(1500);
+  await openUploadTab(page);
+  await sleep(700);
+  const input = page.locator('input[type=file]').first();
+  await input.waitFor({ state: 'attached', timeout: 15000 });
+  await input.setInputFiles({ name: fileName, mimeType: mime || 'image/png', buffer });
+  await page.waitForTimeout(6500); /* 上传 OSS + materials/one + 自动贴片 */
+  const layers = await canvasLayerCount(page);
+  return { face, layers };
+}
+
+async function saveDesign(page) {
+  const clicked = await clickByText(page, '^保\\s*存$', { exact: false });
+  await page.waitForTimeout(2500);
+  const confirm = await clickByText(page, '^确\\s*认$', { exact: false });
+  await page.waitForTimeout(1500);
+  return { clicked: clicked ?? null, confirm: confirm ?? null };
+}
+
+async function addToCart(page, { size, quantity }) {
+  const sizeClicked = await page.evaluate((value) => {
+    const boxes = [...document.querySelectorAll('[class*="sizes__style"]')];
+    const scope = boxes[0] || document.body;
+    const items = [...scope.querySelectorAll('[class*="sizeItem__style"]')];
+    const target = items.find((el) => (el.textContent || '').trim() === value);
+    if (!target) return false;
+    target.click();
+    return true;
+  }, size);
+  await page.waitForTimeout(600);
+  const qty = page.locator('input.ant-input-number-input').first();
+  if (await qty.count()) {
+    await qty.click({ clickCount: 3 }).catch(() => {});
+    await qty.fill(String(quantity));
+    await qty.press('Enter').catch(() => {});
+    await page.waitForTimeout(400);
+  }
+  const added = await clickByText(page, '加入购物车');
+  await page.waitForTimeout(3000);
+  const toast = await page.evaluate(() => {
+    const notices = [...document.querySelectorAll('.ant-message-notice, .ant-notification-notice')];
+    return notices.map((el) => (el.textContent || '').trim()).filter(Boolean).slice(0, 3);
+  });
+  return { size: sizeClicked ? size : null, quantity, added: added ?? null, toast };
+}
+
+/** 跑一条 intake：注入所有片 → 保存 → 按订单尺码/数量加购物车 */
+export async function runIntake(page, intake, cartLines, options = {}) {
+  const designProductId = options.designProductId;
+  const startedAt = new Date().toISOString();
+  const url = designerUrl(intake.productId, designProductId);
+  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 90000 });
+  await page.waitForTimeout(9000);
+  await assertLoggedIn(page);
+
+  const mode = await selectMode(page, intake.modeKind);
+  await page.waitForTimeout(4500);
+
+  const sides = [];
+  for (const side of intake.sides ?? []) {
+    const buffer = await options.fetchSide(intake.id, side.sideId);
+    const result = await uploadSide(page, {
+      name: side.name || side.sideId,
+      mime: side.mime || 'image/png',
+      buffer,
+      fileName: `hx-${intake.id}-${side.sideId}.png`
+    });
+    sides.push({ sideId: side.sideId, name: side.name, ...result });
+  }
+
+  const saved = await saveDesign(page);
+  const carts = [];
+  for (const line of cartLines) carts.push(await addToCart(page, line));
+
+  const shotDir = path.join(STORAGE_PATH, 'shots');
+  fs.mkdirSync(shotDir, { recursive: true });
+  const screenshot = path.join(shotDir, `${intake.id}-${Date.now()}.png`);
+  await page.screenshot({ path: screenshot, fullPage: false }).catch(() => {});
+
+  return { url, mode, sides, saved, carts, screenshot, startedAt, finishedAt: new Date().toISOString(), sizes: SIZES };
+}

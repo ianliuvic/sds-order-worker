@@ -1,0 +1,17 @@
+{
+  "name": "sds-order-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Consume POD design intakes from pod-api and reproduce them in the SDS designer, then add to cart.",
+  "scripts": {
+    "start": "node src/server.js",
+    "check": "node --check src/server.js && node --check src/pod-api.js && node --check src/sds-driver.js"
+  },
+  "dependencies": {
+    "playwright": "1.55.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
