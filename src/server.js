@@ -33,6 +33,7 @@ const state = {
   job: null,
   running: false,
   logs: [],
+  userAgent: process.env.SDS_USER_AGENT || '',
   lastRunAt: null,
   lastError: null,
   bootedAt: new Date().toISOString()
@@ -68,8 +69,19 @@ async function launchPersistent({ headless }) {
     headless,
     viewport: headless ? { width: 1440, height: 1000 } : null,
     locale: 'zh-CN',
+    userAgent: state.userAgent || undefined,
     env: { ...process.env, DISPLAY: headless ? process.env.DISPLAY : DISPLAY },
-    args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled']
+    args: [
+      '--no-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-blink-features=AutomationControlled',
+      /* SDS 设计器要 WebGL（three.js）；headless 下必须开 SwiftShader 软渲染，否则一直卡骨架屏 */
+      '--enable-unsafe-swiftshader',
+      '--use-gl=angle',
+      '--use-angle=swiftshader',
+      '--ignore-gpu-blocklist',
+      '--enable-webgl'
+    ]
   });
 }
 
@@ -398,6 +410,14 @@ const server = http.createServer(async (req, res) => {
       const cookies = Array.isArray(body.cookies) ? body.cookies : [];
       const storage = body.localStorage && typeof body.localStorage === 'object' ? body.localStorage : {};
       if (!cookies.length && !Object.keys(storage).length) return json(res, 400, { error: 'empty_session' });
+      /* 会话来自操作者本机浏览器：UA 也一起带上，指纹更一致 */
+      const incomingUa = String(body.userAgent || '');
+      if (incomingUa && incomingUa !== state.userAgent) {
+        state.userAgent = incomingUa;
+        await closeContext();
+        state.context = null;
+        log(`[session] user-agent adopted (${incomingUa.slice(0, 40)}...)`);
+      }
       const context = await ensureHeadless();
       if (cookies.length) {
         await context.addCookies(cookies.map((cookie) => ({
