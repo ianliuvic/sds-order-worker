@@ -88,26 +88,27 @@ async function selectMode(page, kind) {
   }, wanted);
 }
 
-async function selectFace(page, name) {
-  return page.evaluate((faceName) => {
+async function selectFace(page, name, index = 0) {
+  return page.evaluate(({ faceName, faceIndex }) => {
     const boxes = [...document.querySelectorAll('[class*="faces__style"]')];
     const scope = boxes[0] || document.body;
-    const labels = [...scope.querySelectorAll('[class*="name__style"]')];
-    const label = labels.find((el) => (el.textContent || '').trim() === faceName);
+    const labels = [...scope.querySelectorAll('[class*="name__style"]')].filter((el) => (el.textContent || '').trim());
+    let label = labels.find((el) => (el.textContent || '').trim() === faceName);
+    if (!label) label = labels[faceIndex]; /* 名字对不上时退回按顺序取 */
     if (!label) return 'face_not_found';
     const item = label.closest('[class*="item__style"]') || label.parentElement || label;
     if (/active__/.test((item.className || ''))) return 'already_active';
     item.click();
     return 'clicked';
-  }, name);
+  }, { faceName: name, faceIndex: index });
 }
 
 async function openUploadTab(page) {
   return clickByText(page, '上传', { exact: true });
 }
 
-async function uploadSide(page, { name, mime, buffer, fileName }) {
-  const face = await selectFace(page, name);
+async function uploadSide(page, { name, mime, buffer, fileName, index }) {
+  const face = await selectFace(page, name, index);
   await sleep(1500);
   await openUploadTab(page);
   await sleep(700);
@@ -167,14 +168,17 @@ export async function runIntake(page, intake, cartLines, options = {}) {
   await page.waitForTimeout(4500);
 
   const sides = [];
+  let sideIndex = 0;
   for (const side of intake.sides ?? []) {
     const buffer = await options.fetchSide(intake.id, side.sideId);
     const result = await uploadSide(page, {
       name: side.name || side.sideId,
       mime: side.mime || 'image/png',
       buffer,
-      fileName: `hx-${intake.id}-${side.sideId}.png`
+      fileName: `hx-${intake.id}-${side.sideId}.png`,
+      index: sideIndex
     });
+    sideIndex += 1;
     sides.push({ sideId: side.sideId, name: side.name, ...result });
   }
 

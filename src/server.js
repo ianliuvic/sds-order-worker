@@ -208,6 +208,21 @@ function authorized(req) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+function authorizedQuery(req, url) {
+  if (authorized(req)) return true;
+  if (!WORKER_SECRET) return true;
+  const supplied = String(url.searchParams.get('secret') || '');
+  const a = Buffer.from(supplied);
+  const b = Buffer.from(WORKER_SECRET);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+async function currentPage() {
+  if (!state.context) return null;
+  const pages = state.context.pages();
+  return pages[pages.length - 1] ?? null;
+}
+
 /* ---------------------- noVNC 反代（带 Basic Auth） ----------------------
  * 容器里 websockify 只监听 127.0.0.1:6080；这里把 /vnc/* 反代过去，
  * 这样登录页走 Coolify 的 HTTPS 域名，而且外面还有一道 Basic Auth。 */
@@ -289,6 +304,24 @@ const server = http.createServer(async (req, res) => {
       const limit = Number(url.searchParams.get('limit') || 20);
       const intakes = await pod.pendingIntakes({ limit, includeUnordered });
       return json(res, 200, { pending: intakes.length, items: intakes.map(summarize) });
+    }
+    if (req.method === 'GET' && url.pathname === '/api/browser') {
+      if (!authorizedQuery(req, url)) return json(res, 401, { error: 'unauthorized' });
+      const page = await currentPage();
+      return json(res, 200, {
+        mode: state.browserMode,
+        pages: state.context ? state.context.pages().length : 0,
+        url: page ? page.url() : null,
+        title: page ? await page.title().catch(() => null) : null
+      });
+    }
+    if (req.method === 'GET' && url.pathname === '/api/screenshot') {
+      if (!authorizedQuery(req, url)) return json(res, 401, { error: 'unauthorized' });
+      const page = await currentPage();
+      if (!page) return json(res, 409, { error: 'no_browser', hint: '先 POST /api/browser-mode/login 或跑一次任务' });
+      const shot = await page.screenshot({ type: 'png' });
+      res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': shot.length, 'Cache-Control': 'no-store' });
+      return res.end(shot);
     }
     if (req.method === 'GET' && url.pathname === '/api/jobs/last') return json(res, 200, state.job ?? {});
     if (req.method === 'GET' && url.pathname.startsWith('/api/jobs/')) {
