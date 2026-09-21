@@ -127,8 +127,10 @@ async function enterLoginMode() {
 }
 
 function novncUrl() {
+  /* path 显式指定，避免 noVNC 自己按当前目录猜 websockify 路径 */
+  const query = 'autoconnect=1&resize=scale&path=%2Fvnc%2Fwebsockify';
   const base = process.env.PUBLIC_BASE_URL || '';
-  return base ? `${base.replace(/\/+$/, '')}/vnc/vnc.html?autoconnect=1&resize=scale` : `http://127.0.0.1:${NOVNC_PORT}/vnc.html?autoconnect=1`;
+  return base ? `${base.replace(/\/+$/, '')}/vnc/vnc.html?${query}` : `http://127.0.0.1:${NOVNC_PORT}/vnc.html?${query}`;
 }
 
 async function exitLoginMode() {
@@ -281,7 +283,8 @@ function denyVnc(res) {
 
 function proxyVncHttp(req, res) {
   if (!basicAuthOk(req)) return denyVnc(res);
-  const target = req.url.replace(/^\/vnc/, '') || '/';
+  const raw = req.url || '/';
+  const target = raw.startsWith('/vnc') ? (raw.replace(/^\/vnc/, '') || '/') : raw;
   const upstream = http.request({ host: '127.0.0.1', port: NOVNC_PORT, path: target, method: req.method, headers: { ...req.headers, host: `127.0.0.1:${NOVNC_PORT}` } }, (response) => {
     res.writeHead(response.statusCode || 502, response.headers);
     response.pipe(res);
@@ -294,28 +297,52 @@ function proxyVncHttp(req, res) {
 }
 
 function proxyVncUpgrade(req, socket, head) {
+  const raw = req.url || '/';
+  const target = raw.startsWith('/vnc') ? (raw.replace(/^\/vnc/, '') || '/') : raw;
   if (!basicAuthOk(req)) {
+    log(`[vnc] upgrade rejected (auth) path=${raw}`);
     socket.write('HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm="sds-worker-vnc"\r\n\r\n');
     return socket.destroy();
   }
-  const target = req.url.replace(/^\/vnc/, '') || '/';
   const upstream = net.connect(NOVNC_PORT, '127.0.0.1', () => {
     const headers = Object.entries({ ...req.headers, host: `127.0.0.1:${NOVNC_PORT}` }).map(([key, value]) => `${key}: ${value}`).join('\r\n');
     upstream.write(`${req.method} ${target} HTTP/1.1\r\n${headers}\r\n\r\n`);
     if (head?.length) upstream.write(head);
     socket.pipe(upstream).pipe(socket);
   });
-  upstream.on('error', () => socket.destroy());
+  let first = true;
+  upstream.on('data', (chunk) => {
+    if (!first) return;
+    first = false;
+    const head = chunk.toString('utf8', 0, 60).split('\r\n')[0];
+    log(`[vnc] upgrade ${target} -> ${/101/.test(head) ? '101 ok' : head}`);
+  });
+  upstream.on('error', (error) => {
+    log(`[vnc] upgrade failed path=${raw} err=${String(error?.message || error)}`);
+    socket.destroy();
+  });
   socket.on('error', () => upstream.destroy());
+}
+
+/** websockify 是否在听（login 模式下才有） */
+function novncReachable() {
+  return new Promise((resolve) => {
+    const socket = net.connect(NOVNC_PORT, '127.0.0.1');
+    const done = (value) => { try { socket.destroy(); } catch { /* ignore */ } resolve(value); };
+    socket.setTimeout(1500);
+    socket.on('connect', () => done(true));
+    socket.on('timeout', () => done(false));
+    socket.on('error', () => done(false));
+  });
 }
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://localhost');
   try {
-    if (url.pathname === '/vnc' || url.pathname.startsWith('/vnc/')) {
-      /* 方便直接访问 /vnc → noVNC 客户端 */
+    if (url.pathname === '/vnc' || url.pathname.startsWith('/vnc/') || url.pathname === '/websockify') {
+      /* 方便直接访问 /vnc → noVNC 客户端（/websockify 也直通，兼容 noVNC 自己算出来的路径） */
       if (url.pathname === '/vnc' || url.pathname === '/vnc/') {
-        res.writeHead(302, { Location: '/vnc/vnc.html?autoconnect=1&resize=scale' });
+        res.writeHead(302, { Location: '/vnc/vnc.html?autoconnect=1&resize=scale&path=%2Fvnc%2Fwebsockify' });
         return res.end();
       }
       return proxyVncHttp(req, res);
@@ -332,6 +359,7 @@ const server = http.createServer(async (req, res) => {
         helperProcesses: state.helpers.length,
         bootedAt: state.bootedAt,
         storage: STORAGE,
+        novnc: { port: NOVNC_PORT, url: novncUrl(), reachable: await novncReachable(), passwordSet: !!VNC_PASSWORD },
         lastRunAt: state.lastRunAt,
         lastError: state.lastError,
         job: state.job ? { id: state.job.id, dryRun: state.job.dryRun, items: state.job.items.length, finishedAt: state.job.finishedAt } : null
