@@ -32,13 +32,17 @@ const state = {
   helpers: [],
   job: null,
   running: false,
+  logs: [],
   lastRunAt: null,
   lastError: null,
   bootedAt: new Date().toISOString()
 };
 
 function log(...args) {
-  console.log(`[worker ${new Date().toISOString()}]`, ...args);
+  const line = `[worker ${new Date().toISOString()}] ${args.map((value) => (typeof value === 'string' ? value : JSON.stringify(value))).join(' ')}`;
+  console.log(line);
+  state.logs.push(line);
+  if (state.logs.length > 300) state.logs.splice(0, state.logs.length - 300);
 }
 
 /* 持久卷自检：boots.log 跨重启保留 => 卷挂上了（SDS 登录态也就能留住） */
@@ -158,7 +162,7 @@ async function runJob(options = {}) {
   const includeUnordered = !!options.includeUnordered;
   const dryRun = options.dryRun === undefined ? true : !!options.dryRun;
   const writeBack = !!options.writeBack;
-  const job = { id: crypto.randomUUID(), startedAt: new Date().toISOString(), dryRun, options: { limit, includeUnordered, writeBack }, items: [], finishedAt: null, error: null };
+  const job = { id: crypto.randomUUID(), startedAt: new Date().toISOString(), dryRun, options: { limit, includeUnordered, writeBack, intakeId: options.intakeId ?? null }, items: [], finishedAt: null, error: null };
   state.job = job;
   state.running = true;
   state.lastRunAt = job.startedAt;
@@ -172,7 +176,15 @@ async function runJob(options = {}) {
   }
   log(`job ${job.id} start dryRun=${dryRun} limit=${limit}`);
   try {
-    const intakes = await pod.pendingIntakes({ limit, includeUnordered });
+    let intakes;
+    if (options.intakeId) {
+      const single = await pod.getIntake(String(options.intakeId));
+      if (!single) throw new Error('intake_not_found');
+      if (!includeUnordered && !(single.orders ?? []).length) throw new Error('intake_has_no_order');
+      intakes = [single];
+    } else {
+      intakes = await pod.pendingIntakes({ limit, includeUnordered });
+    }
     for (const intake of intakes) {
       const plan = summarize(intake);
       if (dryRun) {
@@ -358,6 +370,11 @@ const server = http.createServer(async (req, res) => {
       await page.goto(String(body.url), { waitUntil: 'domcontentloaded', timeout: 90000 });
       await page.waitForTimeout(3000);
       return json(res, 200, { url: page.url(), title: await page.title().catch(() => null) });
+    }
+    if (req.method === 'GET' && url.pathname === '/api/logs') {
+      if (!authorizedQuery(req, url)) return json(res, 401, { error: 'unauthorized' });
+      const limit = Math.min(Math.max(Number(url.searchParams.get('limit') || 100), 1), 300);
+      return json(res, 200, { count: state.logs.length, lines: state.logs.slice(-limit) });
     }
     if (req.method === 'GET' && url.pathname === '/api/jobs/last') return json(res, 200, state.job ?? {});
     if (req.method === 'GET' && url.pathname.startsWith('/api/jobs/')) {
