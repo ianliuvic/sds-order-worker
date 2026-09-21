@@ -231,7 +231,16 @@ async function runJob(options = {}) {
           fetchSide: (intakeId, sideId) => pod.sideBytes(intakeId, sideId)
         });
         await page.goto('about:blank').catch(() => {});
+        const cartOk = (result.carts || []).length > 0 && (result.carts || []).every((cart) => cart.clicked);
         const sds = { cartAddedAt: new Date().toISOString(), designerUrl: result.url, pieces: result.sides, carts: result.carts, screenshot: result.screenshot };
+        if (!cartOk) {
+          /* 加了但购物车里没多出来 → 不能算成功，写 failed 让人工看 diag */
+          sds.note = 'cart_not_verified';
+          await pod.reportSds(intake.id, { status: 'failed', sds, error: 'cart_add_failed' });
+          job.items.push({ ...plan, status: 'failed', error: 'cart_add_failed', sds });
+          log('cart_add_failed', plan.id, JSON.stringify(result.carts));
+          continue;
+        }
         await pod.reportSds(intake.id, { status: 'cart_added', sds });
         job.items.push({ ...plan, status: 'cart_added', sds });
         log('cart_added', plan.id, JSON.stringify(result.carts.map((cart) => cart.toast)));

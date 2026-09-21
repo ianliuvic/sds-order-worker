@@ -210,21 +210,29 @@ async function addToCart(page, { size, quantity }) {
     clicked: false,
     cartRowsBefore: baseline ? baseline.length : null,
     cartRowsAfter: null,
-    popupUrl: null
+    popupUrl: null,
+    diag: []
   };
+  const qtyInput = page.locator('input.ant-input-number-input').first();
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     result.attempts = attempt;
     await page.bringToFront().catch(() => {});
-    await selectSize(page, size);
+    const sizeOk = await selectSize(page, size);
     await page.waitForTimeout(800);
-    await setQuantity(page, quantity);
+    const qtyOk = await setQuantity(page, quantity);
+    const state = await page.evaluate(() => ({
+      activeSize: (() => {
+        const active = [...document.querySelectorAll('[class*="sizeItem__style"]')].find((el) => /active__/.test(el.className || ''));
+        return active ? (active.textContent || '').trim() : null;
+      })(),
+      buttons: [...document.querySelectorAll('button')]
+        .filter((el) => /加入购物车/.test(el.innerText || ''))
+        .map((el) => ({ visible: el.offsetParent !== null, disabled: !!el.disabled, cls: String(el.className).slice(0, 50) })),
+      bodyHint: (document.body.innerText || '').replace(/\s+/g, ' ').slice(-160)
+    }));
     const popupPromise = context.waitForEvent('page', { timeout: 15000 }).catch(() => null);
-    const clicked = await clickAddToCart(page);
-    if (!clicked) {
-      await page.waitForTimeout(1500);
-      continue;
-    }
-    const popup = await popupPromise;
+    const buttonClicked = await clickAddToCart(page);
+    const popup = buttonClicked ? await popupPromise : null;
     if (popup) {
       result.popupUrl = popup.url();
       await popup.waitForLoadState('domcontentloaded').catch(() => {});
@@ -233,12 +241,17 @@ async function addToCart(page, { size, quantity }) {
     await page.waitForTimeout(2500);
     const after = await cartRowTexts(context);
     result.cartRowsAfter = after ? after.length : null;
+    result.diag.push({
+      attempt,
+      sizeOk,
+      qtyOk,
+      qtyValue: await qtyInput.inputValue().catch(() => null),
+      activeSize: state.activeSize,
+      buttons: state.buttons,
+      buttonClicked,
+      bodyHint: state.bodyHint
+    });
     if (after && baseline && after.length > baseline.length) {
-      result.clicked = true;
-      result.cartRows = after;
-      break;
-    }
-    if (after && !baseline) {
       result.clicked = true;
       result.cartRows = after;
       break;
