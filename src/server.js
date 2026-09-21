@@ -339,6 +339,16 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': shot.length, 'Cache-Control': 'no-store' });
       return res.end(shot);
     }
+    if (req.method === 'POST' && url.pathname === '/api/browser/goto') {
+      if (!authorized(req)) return json(res, 401, { error: 'unauthorized' });
+      const body = await readBody(req);
+      if (!body.url || !/^https:\/\//.test(String(body.url))) return json(res, 400, { error: 'invalid_url' });
+      const page = await currentPage();
+      if (!page) return json(res, 409, { error: 'no_browser', hint: '先 POST /api/browser-mode/login' });
+      await page.goto(String(body.url), { waitUntil: 'domcontentloaded', timeout: 90000 });
+      await page.waitForTimeout(3000);
+      return json(res, 200, { url: page.url(), title: await page.title().catch(() => null) });
+    }
     if (req.method === 'GET' && url.pathname === '/api/jobs/last') return json(res, 200, state.job ?? {});
     if (req.method === 'GET' && url.pathname.startsWith('/api/jobs/')) {
       const id = url.pathname.split('/').pop();

@@ -107,17 +107,26 @@ async function openUploadTab(page) {
   return clickByText(page, '上传', { exact: true });
 }
 
-async function uploadSide(page, { name, mime, buffer, fileName, index }) {
-  const face = await selectFace(page, name, index);
-  await sleep(1500);
-  await openUploadTab(page);
-  await sleep(700);
-  const input = page.locator('input[type=file]').first();
-  await input.waitFor({ state: 'attached', timeout: 15000 });
-  await input.setInputFiles({ name: fileName, mimeType: mime || 'image/png', buffer });
-  await page.waitForTimeout(6500); /* 上传 OSS + materials/one + 自动贴片 */
-  const layers = await canvasLayerCount(page);
-  return { face, layers };
+async function uploadSide(page, { name, mime, buffer, fileName, index, expectLayers = 1 }) {
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const face = await selectFace(page, name, index);
+    await sleep(1500);
+    await openUploadTab(page);
+    await sleep(700);
+    const input = page.locator('input[type=file]').first();
+    await input.waitFor({ state: 'attached', timeout: 15000 });
+    await input.setInputFiles({ name: fileName, mimeType: mime || 'image/png', buffer });
+    /* 轮询等「上传 OSS + materials/one + 自动贴片」，比固定 sleep 稳 */
+    const deadline = Date.now() + 25000;
+    let layers = await canvasLayerCount(page);
+    while (Date.now() < deadline && (layers === null || layers < expectLayers)) {
+      await page.waitForTimeout(1000);
+      layers = await canvasLayerCount(page);
+    }
+    if (layers !== null && layers >= expectLayers) return { face, layers, attempts: attempt };
+    if (attempt === 2) return { face, layers, attempts: attempt, warning: 'layer_count_not_increased' };
+  }
+  return { face: 'unreachable', layers: null };
 }
 
 async function saveDesign(page) {
@@ -169,14 +178,18 @@ export async function runIntake(page, intake, cartLines, options = {}) {
 
   const sides = [];
   let sideIndex = 0;
+  let expectedLayers = await canvasLayerCount(page);
+  if (expectedLayers === null) expectedLayers = 0;
   for (const side of intake.sides ?? []) {
     const buffer = await options.fetchSide(intake.id, side.sideId);
+    expectedLayers = (expectedLayers ?? 0) + 1;
     const result = await uploadSide(page, {
       name: side.name || side.sideId,
       mime: side.mime || 'image/png',
       buffer,
       fileName: `hx-${intake.id}-${side.sideId}.png`,
-      index: sideIndex
+      index: sideIndex,
+      expectLayers: expectedLayers
     });
     sideIndex += 1;
     sides.push({ sideId: side.sideId, name: side.name, ...result });
