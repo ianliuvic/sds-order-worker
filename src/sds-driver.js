@@ -17,6 +17,8 @@ export function designerUrl(productId, designProductId) {
 }
 
 async function assertLoggedIn(page) {
+  const url = page.url();
+  if (/\/user\/login/.test(url)) throw new Error('sds_needs_login');
   const needsLogin = await page.evaluate(() => !!document.querySelector('input[type=password]') || /请登录|登录后/.test(document.body.innerText || ''));
   if (needsLogin) throw new Error('sds_needs_login');
 }

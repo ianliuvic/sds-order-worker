@@ -23,6 +23,7 @@ const VNC_PASSWORD = process.env.VNC_PASSWORD || '';
 const DISPLAY = process.env.DISPLAY || ':99';
 const NOVNC_PORT = Number(process.env.NOVNC_PORT || 6080);
 const DAILY_AT = process.env.DAILY_AT || '';
+const SDS_LOGIN_URL = process.env.SDS_LOGIN_URL || 'https://www.sdsdiy.com/user/login';
 
 const pod = new PodApi();
 const state = {
@@ -114,10 +115,10 @@ async function enterLoginMode() {
     args: ['--no-sandbox', '--disable-dev-shm-usage']
   });
   const page = state.context.pages()[0] || (await state.context.newPage());
-  await page.goto('https://www.sdsdiy.com/', { waitUntil: 'domcontentloaded', timeout: 90000 }).catch(() => {});
+  await page.goto(SDS_LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 90000 }).catch(() => {});
   state.browserMode = 'login';
   log('login mode ready (novnc)');
-  return { mode: 'login', novncUrl: novncUrl() };
+  return { mode: 'login', novncUrl: novncUrl(), loginUrl: page.url() };
 }
 
 function novncUrl() {
