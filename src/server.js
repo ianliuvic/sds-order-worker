@@ -232,7 +232,7 @@ async function runJob(options = {}) {
         });
         await page.goto('about:blank').catch(() => {});
         const cartOk = (result.carts || []).length > 0 && (result.carts || []).every((cart) => cart.clicked);
-        const sds = { cartAddedAt: new Date().toISOString(), designerUrl: result.url, pieces: result.sides, carts: result.carts, screenshot: result.screenshot };
+        const sds = { cartAddedAt: new Date().toISOString(), designerUrl: result.url, mode: result.mode, saved: result.saved, pieces: result.sides, carts: result.carts, screenshot: result.screenshot };
         if (!cartOk) {
           /* 加了但购物车里没多出来 → 不能算成功，写 failed 让人工看 diag */
           sds.note = 'cart_not_verified';

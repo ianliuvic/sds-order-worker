@@ -251,6 +251,12 @@ async function addToCart(page, { size, quantity }) {
     const popupPromise = context.waitForEvent('page', { timeout: 15000 }).catch(() => null);
     const buttonClicked = await clickAddToCart(page);
     const popup = buttonClicked ? await popupPromise : null;
+    await page.waitForTimeout(1200);
+    const afterClickState = await page.evaluate(() => ({
+      toasts: [...document.querySelectorAll('.ant-message-notice,.ant-notification-notice')].map((el) => (el.textContent || '').trim()).filter(Boolean).slice(0, 3),
+      modals: [...document.querySelectorAll('.ant-modal')].map((el) => (el.innerText || '').replace(/\s+/g, ' ').slice(0, 120)).slice(0, 2),
+      url: location.href
+    }));
     if (popup) {
       result.popupUrl = popup.url();
       await popup.waitForLoadState('domcontentloaded').catch(() => {});
@@ -267,6 +273,7 @@ async function addToCart(page, { size, quantity }) {
       activeSize: state.activeSize,
       buttons: state.buttons,
       buttonClicked,
+      afterClick: afterClickState,
       bodyHint: state.bodyHint
     });
     if (after && baseline && after.length > baseline.length) {
