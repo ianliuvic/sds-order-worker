@@ -27,6 +27,7 @@
 | GET | `/api/jobs/{id}` / `/api/jobs/last` | 任务状态 |
 | POST | `/api/browser-mode/login` | 切到可视 Chromium + noVNC，人工登录 SDS |
 | POST | `/api/browser-mode/worker` | 存好登录态、关掉可视浏览器、切回 headless |
+| GET | `/vnc/` | noVNC 客户端（服务内反代 websockify，外面套 Basic Auth） |
 
 写操作需要 `x-worker-secret: $WORKER_SECRET`（留空则不校验，仅建议内网使用）。
 
@@ -37,6 +38,7 @@
 | `POD_API_BASE` | 默认 `https://pod-api.wearhongxiu.com` |
 | `POD_API_KEY` | pod-api 写接口的 key（`~/.wp-pod/api-key.txt` 同值） |
 | `WORKER_SECRET` | 保护 `/api/*` |
+| `VNC_USER` / `VNC_PASSWORD` | noVNC 的 Basic Auth（`VNC_PASSWORD` 为空则不校验，**公网部署务必设置**） |
 | `PROFILE_PATH` / `STORAGE_PATH` | 浏览器 profile（登录态）与截图目录，**必须挂持久卷** |
 | `DAILY_AT` | 例如 `03:30`，每天这个时间自动跑一批（`DRY_RUN=1` 则只出计划） |
 | `RUN_ON_START=1` | 启动即跑一批 |
@@ -62,6 +64,9 @@ docker run --rm -p 8080:8080 -p 6080:6080 \
 
 ## 首次登录
 
-1. `POST /api/browser-mode/login` → 返回 noVNC 链接（nginx 反代 `/vnc/` 到 6080）。
-2. 在 noVNC 里手动登录 SDS（账号密码都不落库，只留在 profile 卷里）。
-3. `POST /api/browser-mode/worker` → 切回 headless，之后定时任务用这份登录态。
+1. `POST /api/browser-mode/login`（带 `x-worker-secret`）→ 返回 noVNC 链接。
+2. 打开 `https://<应用域名>/vnc/`，用 `VNC_USER` / `VNC_PASSWORD` 过 Basic Auth，在画面里手动登录 SDS（账号只留在 profile 卷里，不落库）。
+3. `POST /api/browser-mode/worker` → 切回 headless，之后定时任务复用这份登录态。
+
+> 容器内 websockify 只监听 `127.0.0.1:6080`，外部一律通过服务自身 `/vnc/*` 反代（HTTP + WebSocket），
+> 所以只需要暴露应用端口（8080），不用额外开放 6080。

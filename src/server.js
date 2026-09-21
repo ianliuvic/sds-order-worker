@@ -9,6 +9,7 @@ import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
+import net from 'node:net';
 import path from 'node:path';
 import { PodApi } from './pod-api.js';
 import { runIntake } from './sds-driver.js';
@@ -17,6 +18,8 @@ const PORT = Number(process.env.PORT || 8080);
 const PROFILE_PATH = process.env.PROFILE_PATH || '/app/storage/browser-profile';
 const STORAGE_PATH = process.env.STORAGE_PATH || '/app/storage';
 const WORKER_SECRET = process.env.WORKER_SECRET || '';
+const VNC_USER = process.env.VNC_USER || 'hongxiu';
+const VNC_PASSWORD = process.env.VNC_PASSWORD || '';
 const DISPLAY = process.env.DISPLAY || ':99';
 const NOVNC_PORT = Number(process.env.NOVNC_PORT || 6080);
 const DAILY_AT = process.env.DAILY_AT || '';
@@ -205,9 +208,66 @@ function authorized(req) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+/* ---------------------- noVNC 反代（带 Basic Auth） ----------------------
+ * 容器里 websockify 只监听 127.0.0.1:6080；这里把 /vnc/* 反代过去，
+ * 这样登录页走 Coolify 的 HTTPS 域名，而且外面还有一道 Basic Auth。 */
+function basicAuthOk(req) {
+  if (!VNC_PASSWORD) return true;
+  const header = String(req.headers.authorization || '');
+  if (!header.startsWith('Basic ')) return false;
+  const decoded = Buffer.from(header.slice(6), 'base64').toString('utf8');
+  const index = decoded.indexOf(':');
+  const user = decoded.slice(0, index);
+  const pass = decoded.slice(index + 1);
+  return user === VNC_USER && pass === VNC_PASSWORD;
+}
+
+function denyVnc(res) {
+  res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="sds-worker-vnc"', 'Content-Type': 'text/plain' });
+  res.end('authentication required');
+}
+
+function proxyVncHttp(req, res) {
+  if (!basicAuthOk(req)) return denyVnc(res);
+  const target = req.url.replace(/^\/vnc/, '') || '/';
+  const upstream = http.request({ host: '127.0.0.1', port: NOVNC_PORT, path: target, method: req.method, headers: { ...req.headers, host: `127.0.0.1:${NOVNC_PORT}` } }, (response) => {
+    res.writeHead(response.statusCode || 502, response.headers);
+    response.pipe(res);
+  });
+  upstream.on('error', () => {
+    res.writeHead(502, { 'Content-Type': 'text/plain' });
+    res.end('novnc upstream unavailable (switch to login mode first)');
+  });
+  req.pipe(upstream);
+}
+
+function proxyVncUpgrade(req, socket, head) {
+  if (!basicAuthOk(req)) {
+    socket.write('HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm="sds-worker-vnc"\r\n\r\n');
+    return socket.destroy();
+  }
+  const target = req.url.replace(/^\/vnc/, '') || '/';
+  const upstream = net.connect(NOVNC_PORT, '127.0.0.1', () => {
+    const headers = Object.entries({ ...req.headers, host: `127.0.0.1:${NOVNC_PORT}` }).map(([key, value]) => `${key}: ${value}`).join('\r\n');
+    upstream.write(`${req.method} ${target} HTTP/1.1\r\n${headers}\r\n\r\n`);
+    if (head?.length) upstream.write(head);
+    socket.pipe(upstream).pipe(socket);
+  });
+  upstream.on('error', () => socket.destroy());
+  socket.on('error', () => upstream.destroy());
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://localhost');
   try {
+    if (url.pathname === '/vnc' || url.pathname.startsWith('/vnc/')) {
+      /* 方便直接访问 /vnc → noVNC 客户端 */
+      if (url.pathname === '/vnc' || url.pathname === '/vnc/') {
+        res.writeHead(302, { Location: '/vnc/vnc.html?autoconnect=1&resize=scale' });
+        return res.end();
+      }
+      return proxyVncHttp(req, res);
+    }
     if (req.method === 'GET' && url.pathname === '/health') {
       return json(res, 200, {
         status: 'ok',
@@ -275,6 +335,11 @@ function scheduleDaily() {
     }
   }, 60_000);
 }
+
+server.on('upgrade', (req, socket, head) => {
+  if (String(req.url || '').startsWith('/vnc/')) return proxyVncUpgrade(req, socket, head);
+  socket.destroy();
+});
 
 server.listen(PORT, () => {
   log(`listening on :${PORT} (pod-api ${pod.base}, key=${pod.key ? 'set' : 'missing'})`);
