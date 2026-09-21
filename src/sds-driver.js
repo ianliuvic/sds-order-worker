@@ -159,41 +159,45 @@ async function cartRowTexts(context) {
 }
 
 async function selectSize(page, size) {
-  return page.evaluate((value) => {
-    const boxes = [...document.querySelectorAll('[class*="sizes__style"]')];
-    const scope = boxes[0] || document.body;
-    const items = [...scope.querySelectorAll('[class*="sizeItem__style"]')];
-    const target = items.find((el) => (el.textContent || '').trim() === value);
-    if (!target) return false;
-    target.click();
+  /* 用真实点击（DOM 的 .click() 触发不了 SDS 的加购/选码逻辑） */
+  const chip = page.locator('[class*="sizeItem__style"]').filter({ hasText: new RegExp(`^${size}$`) }).first();
+  try {
+    await chip.waitFor({ state: 'visible', timeout: 10000 });
+    await chip.click({ timeout: 10000 });
     return true;
-  }, size);
+  } catch (error) {
+    return false;
+  }
 }
 
 async function setQuantity(page, quantity) {
   const qty = page.locator('input.ant-input-number-input').first();
   if (!(await qty.count())) return false;
-  await qty.click().catch(() => {});
-  await qty.press(process.platform === 'darwin' ? 'Meta+a' : 'Control+a').catch(() => {});
-  await qty.type(String(quantity), { delay: 40 }).catch(() => {});
-  await qty.press('Enter').catch(() => {});
-  await page.waitForTimeout(600);
-  return true;
+  try {
+    await qty.click({ timeout: 8000 });
+    await qty.press(process.platform === 'darwin' ? 'Meta+a' : 'Control+a').catch(() => {});
+    await qty.type(String(quantity), { delay: 40 });
+    await qty.press('Enter').catch(() => {});
+    await page.waitForTimeout(600);
+    return true;
+  } catch (error) {
+    return false;
+  }
 }
 
-/** 等可见的「加入购物车」从 disabled 变可用再点（用户没动过尺码/数量前它一直是禁用的） */
-async function clickAddToCart(page, timeoutMs = 15000) {
+/** 等可见的「加入购物车」变可用，然后**真实点击**（Playwright 会做可点性检查） */
+async function clickAddToCart(page, timeoutMs = 20000) {
+  const button = page.locator('button:visible').filter({ hasText: '加入购物车' }).first();
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const clicked = await page.evaluate(() => {
-      const buttons = [...document.querySelectorAll('button')]
-        .filter((el) => /加入购物车/.test(el.innerText || '') && el.offsetParent !== null);
-      const enabled = buttons.find((el) => !el.disabled);
-      if (!enabled) return false;
-      enabled.click();
-      return true;
-    });
-    if (clicked) return true;
+    try {
+      if (await button.isEnabled()) {
+        await button.click({ timeout: 8000 });
+        return true;
+      }
+    } catch (error) {
+      /* 还在切换态，继续等 */
+    }
     await page.waitForTimeout(1000);
   }
   return false;
