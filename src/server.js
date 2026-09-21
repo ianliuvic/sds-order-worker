@@ -389,6 +389,50 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': shot.length, 'Cache-Control': 'no-store' });
       return res.end(shot);
     }
+    if (req.method === 'POST' && url.pathname === '/api/browser/session') {
+      /* 把别处（操作者本机浏览器）已经登录好的会话灌进来：cookie + localStorage。
+         用于绕开短信登录/风控——token 在 SDS 的 localStorage 里。 */
+      if (!authorized(req)) return json(res, 401, { error: 'unauthorized' });
+      const body = await readBody(req);
+      const origin = String(body.origin || 'https://www.sdsdiy.com');
+      const cookies = Array.isArray(body.cookies) ? body.cookies : [];
+      const storage = body.localStorage && typeof body.localStorage === 'object' ? body.localStorage : {};
+      if (!cookies.length && !Object.keys(storage).length) return json(res, 400, { error: 'empty_session' });
+      const context = await ensureHeadless();
+      if (cookies.length) {
+        await context.addCookies(cookies.map((cookie) => ({
+          name: String(cookie.name),
+          value: String(cookie.value),
+          domain: cookie.domain ? String(cookie.domain) : undefined,
+          url: cookie.domain ? undefined : origin,
+          path: cookie.path ? String(cookie.path) : '/',
+          httpOnly: !!cookie.httpOnly,
+          secure: cookie.secure !== false,
+          sameSite: cookie.sameSite || 'Lax',
+          expires: typeof cookie.expires === 'number' && cookie.expires > 0 ? cookie.expires : undefined
+        })));
+      }
+      const page = context.pages()[0] || (await context.newPage());
+      await page.goto(origin, { waitUntil: 'domcontentloaded', timeout: 90000 }).catch(() => {});
+      if (Object.keys(storage).length) {
+        await page.evaluate((data) => {
+          for (const [key, value] of Object.entries(data)) {
+            try { window.localStorage.setItem(key, value); } catch (error) { /* ignore */ }
+          }
+        }, storage);
+      }
+      const probe = String(body.probeUrl || '');
+      await page.goto(probe || origin, { waitUntil: 'domcontentloaded', timeout: 90000 }).catch(() => {});
+      await page.waitForTimeout(6000);
+      const finalUrl = page.url();
+      log(`[session] applied cookies=${cookies.length} localStorage=${Object.keys(storage).length} -> ${finalUrl}`);
+      return json(res, 200, {
+        applied: { cookies: cookies.length, localStorage: Object.keys(storage).length },
+        url: finalUrl,
+        title: await page.title().catch(() => null),
+        loggedIn: !/\/user\/login/.test(finalUrl)
+      });
+    }
     if (req.method === 'POST' && url.pathname === '/api/browser/goto') {
       if (!authorized(req)) return json(res, 401, { error: 'unauthorized' });
       const body = await readBody(req);
