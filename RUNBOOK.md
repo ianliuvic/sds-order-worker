@@ -33,32 +33,45 @@ curl -s -H "x-worker-secret: $SECRET" 'https://sds-worker.187.77.216.247.sslip.i
 
 ## 二、登录（一次性 / 失效时）
 
-SDS 登录态存在持久卷的浏览器 profile 里；**重部署不会丢**，但会过期或触发风控。流程：
+SDS 登录态存在持久卷的浏览器 profile 里；**重部署不会丢**（已验证：login↔worker 切换会重启浏览器，切换后直接开设计器仍然登录）。
+但会过期或触发风控。两条路，优先第 2 条：
 
+**路线 2（推荐，绕开短信与风控）：从操作者本机浏览器移植会话**
+SDS 把 token 放在 localStorage 里（不是 httpOnly cookie），所以可以直接搬：
+1. 本机已登录 SDS 的页面里执行（本地桥 127.0.0.1:8899 要开着）：
+   ```js
+   fetch('http://127.0.0.1:8899/session',{method:'POST',headers:{'Content-Type':'application/json'},
+     body:JSON.stringify({origin:location.origin,userAgent:navigator.userAgent,
+       cookies:document.cookie.split('; ').filter(Boolean).map(p=>{const i=p.indexOf('=');return{name:p.slice(0,i),value:p.slice(i+1),domain:'.sdsdiy.com',path:'/'}}),
+       localStorage:Object.fromEntries(Object.keys(localStorage).map(k=>[k,localStorage.getItem(k)]))})})
+   ```
+   桥会把值写到 `~/.wp-pod/sds-session.json`（不进对话/不进仓库）。
+2. 推给 worker（带上要探活的设计器 URL）：
+   ```bash
+   curl -XPOST -H "x-worker-secret: $SECRET" -H 'content-type: application/json' \
+     --data-binary @<把 sds-session.json 加上 "probeUrl" 后的文件> \
+     https://sds-worker.187.77.216.247.sslip.io/api/browser/session
+   ```
+   返回 `loggedIn: true` 且 `url` 不是 `/user/login` 就成了（顺带会把本机 UA 一起采用，指纹更一致）。
+
+**路线 1（人工）：noVNC**
 ```bash
-# 1. 切到可视浏览器（容器里会起 Xvfb + x11vnc + noVNC）
 curl -s -XPOST -H "x-worker-secret: $SECRET" .../api/browser-mode/login
-# 2. 浏览器打开 https://sds-worker.187.77.216.247.sslip.io/vnc/
-#    Basic Auth: VNC_USER / VNC_PASSWORD（同一个 env 文件）；在画面里登录 SDS
-# 3. 确认已登录
-curl -s -XPOST -H "x-worker-secret: $SECRET" -H 'content-type: application/json' \
-  -d '{"url":"https://www.sdsdiy.com/portal/detail/design/246885/246886"}' .../api/browser/goto
-#    → 返回的 url 里若带 /user/login 就是还没登录
-# 4. 切回 headless
+# 浏览器打开 https://sds-worker.187.77.216.247.sslip.io/vnc/  (VNC_USER / VNC_PASSWORD)
+# 登录完：
 curl -s -XPOST -H "x-worker-secret: $SECRET" .../api/browser-mode/worker
 ```
-
-> login 模式下 `POST /api/run` 会返回 **409 `browser_in_login_mode`**（定时任务也会跳过），
-> 这是故意的：任务不会抢走浏览器、不会打断你正在做的登录。
+> login 模式下 `POST /api/run` 返回 **409 `browser_in_login_mode`**（定时任务也会跳过），不会打断你的登录。
+> 注意：SDS 登录页有防重放（红字「验证数据重复提交」），别连点登录、也别用刷新后的旧验证码。
 
 ## 三、失败怎么看
-
 `GET /api/jobs/last` 里每条 item 有 `status` 与 `error`：
 
 | error | 含义 | 处理 |
 |---|---|---|
 | `sds_needs_login` | 登录态没了（设计器被跳到 `/user/login`） | 走第二节重新登录 |
 | `face_not_found` | SDS 里找不到该版片名 | 看 `sides[].face`，必要时改用手工/按序号兜底（驱动已内置序号兜底） |
+| `cart_add_failed` | 购物车里没多出来（点完加购没生效） | 看 `carts[].diag`：`buttonClicked`/`confirmation`（antd Popconfirm 是否出现并点到）/`cartRowsBefore/After`；通常是弹窗没点到或页面状态没准备好，重跑即可 |
 | `layer_count_not_increased` | 上传后画布图层没涨（片子没贴上去） | 单条重跑；连续失败看 `/api/screenshot` 里当时画面 |
 | `intake_has_no_order` | 这条还没绑到订单 | 正常，等真实下单或 `POST /v1/intakes/:id/orders` 模拟 |
 | 超时 | 上传/预览慢 | 单条重跑 |
@@ -66,6 +79,10 @@ curl -s -XPOST -H "x-worker-secret: $SECRET" .../api/browser-mode/worker
 排查时最好用的一张图：`GET /api/screenshot?secret=$SECRET` → 当前浏览器画面（PNG）。
 
 ## 四、单条重跑
+
+> 加购是**两步**：点页脚「加入购物车」→ SDS 会弹 antd Popconfirm「素材尺寸不足…建议重新设计」→ 点弹窗里的
+> 「加入购物车」才算加购完成。驱动已处理：**弹了就点、没弹就直接判定**（素材尺寸够时不会弹；我们现在拍平图
+> 是 599/1042×1200，SDS 要 1498×3000，所以基本每次都会弹）。
 
 ```bash
 # 把状态改回 pending（worker 只处理 pending）
