@@ -76,6 +76,8 @@ async function launchPersistent({ headless }) {
       '--no-sandbox',
       '--disable-dev-shm-usage',
       '--disable-blink-features=AutomationControlled',
+      /* SDS 的「加入购物车」是 window.open 打开购物车 tab —— 默认弹窗拦截会把它挡掉，加购就静默失败 */
+      '--disable-popup-blocking',
       /* SDS 设计器要 WebGL（three.js）；headless 下必须开 SwiftShader 软渲染，否则一直卡骨架屏 */
       '--enable-unsafe-swiftshader',
       '--use-gl=angle',
