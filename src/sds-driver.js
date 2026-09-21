@@ -217,7 +217,35 @@ async function clickAddToCart(page, timeoutMs = 20000) {
   return false;
 }
 
-/** 加购 + 核对：以「购物车行数是否增加」为准，没涨就再试一次 */
+/** 点完页脚「加入购物车」后 SDS 会弹一个 antd Popconfirm（素材尺寸不足，建议重新设计），
+ *  必须在**该弹窗作用域内**点它的「加入购物车」才算真正加购；没弹也属正常（尺寸充足）。 */
+async function confirmPopconfirm(page, timeoutMs = 8000) {
+  const pop = page.locator('.ant-popconfirm:visible').first();
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      if (await pop.count() && await pop.isVisible()) {
+        const text = ((await pop.innerText()) || '').replace(/\s+/g, ' ').trim().slice(0, 140);
+        const confirm = pop.locator('button').filter({ hasText: /^加入购物车$/ }).first();
+        let clicked = false;
+        try {
+          await confirm.click({ timeout: 6000 });
+          clicked = true;
+        } catch (error) {
+          /* 点不到就退回：把弹窗里的按钮都记下来 */
+        }
+        const buttons = await pop.locator('button').allInnerTexts().catch(() => []);
+        return { appeared: true, text, clicked, buttons: buttons.map((b) => (b || '').replace(/\s+/g, ' ').trim()) };
+      }
+    } catch (error) {
+      /* 弹窗正在切换，继续等 */
+    }
+    await page.waitForTimeout(500);
+  }
+  return { appeared: false };
+}
+
+/** 加购 + 核对：页脚点击 → Popconfirm 二次确认 → 以「购物车行数是否增加」为准，没涨就再试一次 */
 async function addToCart(page, { size, quantity }) {
   const context = page.context();
   const baseline = await cartRowTexts(context);
@@ -248,8 +276,9 @@ async function addToCart(page, { size, quantity }) {
         .map((el) => ({ visible: el.offsetParent !== null, disabled: !!el.disabled, cls: String(el.className).slice(0, 50) })),
       bodyHint: (document.body.innerText || '').replace(/\s+/g, ' ').slice(-160)
     }));
-    const popupPromise = context.waitForEvent('page', { timeout: 15000 }).catch(() => null);
+    const popupPromise = context.waitForEvent('page', { timeout: 25000 }).catch(() => null);
     const buttonClicked = await clickAddToCart(page);
+    const confirmation = buttonClicked ? await confirmPopconfirm(page) : { appeared: false };
     const popup = buttonClicked ? await popupPromise : null;
     await page.waitForTimeout(1200);
     const afterClickState = await page.evaluate(() => ({
@@ -273,6 +302,7 @@ async function addToCart(page, { size, quantity }) {
       activeSize: state.activeSize,
       buttons: state.buttons,
       buttonClicked,
+      confirmation,
       afterClick: afterClickState,
       bodyHint: state.bodyHint
     });
