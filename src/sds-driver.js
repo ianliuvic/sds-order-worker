@@ -139,6 +139,10 @@ async function saveDesign(page) {
   return { clicked: clicked ?? null, confirm: confirm ?? null };
 }
 
+/** 选尺码 + 数量 → 加入购物车。
+ *  实测要点（2026-09-21）：
+ *  1) 底部那个可见的「加入购物车」在用户没动过尺码/数量之前是 disabled 的；
+ *  2) 点成功后会**新开一个 tab** 到 /admin/shopping-cart —— 所以要点完等 popup，再从购物车表里核对尺码/数量。 */
 async function addToCart(page, { size, quantity }) {
   const sizeClicked = await page.evaluate((value) => {
     const boxes = [...document.querySelectorAll('[class*="sizes__style"]')];
@@ -149,21 +153,48 @@ async function addToCart(page, { size, quantity }) {
     target.click();
     return true;
   }, size);
-  await page.waitForTimeout(600);
+  await page.waitForTimeout(800);
+
   const qty = page.locator('input.ant-input-number-input').first();
   if (await qty.count()) {
-    await qty.click({ clickCount: 3 }).catch(() => {});
-    await qty.fill(String(quantity));
+    await qty.click().catch(() => {});
+    await qty.press(process.platform === 'darwin' ? 'Meta+a' : 'Control+a').catch(() => {});
+    await qty.type(String(quantity), { delay: 40 }).catch(() => {});
     await qty.press('Enter').catch(() => {});
-    await page.waitForTimeout(400);
+    await page.waitForTimeout(600);
   }
-  const added = await clickByText(page, '加入购物车');
-  await page.waitForTimeout(3000);
-  const toast = await page.evaluate(() => {
-    const notices = [...document.querySelectorAll('.ant-message-notice, .ant-notification-notice')];
-    return notices.map((el) => (el.textContent || '').trim()).filter(Boolean).slice(0, 3);
+
+  /* 等可见按钮从 disabled 变可用（用户交互后才 enable） */
+  const buttonSelector = 'button:not([disabled])';
+  const visibleCart = async () => page.evaluate(() => {
+    const buttons = [...document.querySelectorAll('button')].filter((el) => /加入购物车/.test(el.innerText || '') && el.offsetParent !== null);
+    const enabled = buttons.find((el) => !el.disabled);
+    if (!enabled) return false;
+    enabled.click();
+    return true;
   });
-  return { size: sizeClicked ? size : null, quantity, added: added ?? null, toast };
+  const deadline = Date.now() + 15000;
+  let clicked = false;
+  const popupPromise = page.context().waitForEvent('page', { timeout: 20000 }).catch(() => null);
+  while (!clicked && Date.now() < deadline) {
+    clicked = await visibleCart();
+    if (!clicked) await page.waitForTimeout(1000);
+  }
+
+  let cart = null;
+  const popup = clicked ? await popupPromise : null;
+  if (popup) {
+    await popup.waitForLoadState('domcontentloaded').catch(() => {});
+    await popup.waitForTimeout(3500);
+    cart = await popup.evaluate(() => {
+      const rows = [...document.querySelectorAll('tr')].map((tr) => [...tr.querySelectorAll('td')].map((td) => (td.innerText || '').replace(/\s+/g, ' ').trim())).filter((cells) => cells.some(Boolean));
+      const body = (document.body.innerText || '').replace(/\s+/g, ' ');
+      const total = (body.match(/共?计?[：:]?\s*¥\s*[\d.]+/) || body.match(/¥\s*[\d.]+/) || [])[0] ?? null;
+      return { url: location.href, rows, total, snippet: body.slice(0, 400) };
+    });
+    await popup.close().catch(() => {});
+  }
+  return { size: sizeClicked ? size : null, quantity, clicked, popup: popup ? cart : null, buttonSelector };
 }
 
 /** 跑一条 intake：注入所有片 → 保存 → 按订单尺码/数量加购物车 */
