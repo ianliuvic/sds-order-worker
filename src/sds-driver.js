@@ -132,11 +132,25 @@ async function uploadSide(page, { name, mime, buffer, fileName, index, expectLay
 }
 
 async function saveDesign(page) {
-  const clicked = await clickByText(page, '^保\\s*存$', { exact: false });
+  /* 同样是真实点击：DOM .click() 在 SDS 上不可靠 */
+  const result = { clicked: false, confirmClicked: false, toasts: [] };
+  const button = page.locator('button:visible').filter({ hasText: /^保\s*存$/ }).first();
+  try {
+    await button.waitFor({ state: 'visible', timeout: 10000 });
+    await button.click({ timeout: 10000 });
+    result.clicked = true;
+  } catch (error) {
+    result.error = String(error?.message || error).slice(0, 200);
+  }
   await page.waitForTimeout(2500);
-  const confirm = await clickByText(page, '^确\\s*认$', { exact: false });
-  await page.waitForTimeout(1500);
-  return { clicked: clicked ?? null, confirm: confirm ?? null };
+  const confirm = page.locator('button:visible').filter({ hasText: /^确\s*认$/ }).first();
+  if (await confirm.count()) {
+    try { await confirm.click({ timeout: 5000 }); result.confirmClicked = true; } catch (error) { /* ignore */ }
+    await page.waitForTimeout(1500);
+  }
+  result.toasts = await page.evaluate(() => [...document.querySelectorAll('.ant-message-notice,.ant-notification-notice')]
+    .map((el) => (el.textContent || '').trim()).filter(Boolean).slice(0, 3));
+  return result;
 }
 
 const CART_URL = 'https://www.sdsdiy.com/admin/shopping-cart';
