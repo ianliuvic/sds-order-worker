@@ -433,6 +433,21 @@ const server = http.createServer(async (req, res) => {
         loggedIn: !/\/user\/login/.test(finalUrl)
       });
     }
+    if (req.method === 'POST' && url.pathname === '/api/browser/eval') {
+      /* 在容器浏览器当前页面里求值，用于排障（返回 JSON，别塞大对象） */
+      if (!authorized(req)) return json(res, 401, { error: 'unauthorized' });
+      const body = await readBody(req);
+      const expression = String(body.expression || '');
+      if (!expression) return json(res, 400, { error: 'empty_expression' });
+      const page = await currentPage();
+      if (!page) return json(res, 409, { error: 'no_browser', hint: '先跑一次任务或 goto' });
+      try {
+        const value = await page.evaluate(expression);
+        return json(res, 200, { ok: true, value });
+      } catch (error) {
+        return json(res, 200, { ok: false, error: String(error?.message || error).slice(0, 500) });
+      }
+    }
     if (req.method === 'POST' && url.pathname === '/api/browser/goto') {
       if (!authorized(req)) return json(res, 401, { error: 'unauthorized' });
       const body = await readBody(req);
