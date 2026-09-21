@@ -34,6 +34,7 @@ const state = {
   running: false,
   logs: [],
   userAgent: process.env.SDS_USER_AGENT || '',
+  xReady: false,
   lastRunAt: null,
   lastError: null,
   bootedAt: new Date().toISOString()
@@ -85,13 +86,40 @@ async function launchPersistent({ headless }) {
   });
 }
 
+async function ensureX() {
+  if (state.xReady) return;
+  if (!state.helpers.some((child) => child.__kind === 'xvfb')) {
+    const xvfb = spawnHelper('Xvfb', [DISPLAY, '-screen', '0', '1440x1000x24', '-nolisten', 'tcp']);
+    xvfb.__kind = 'xvfb';
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    const wm = spawnHelper('fluxbox', []);
+    wm.__kind = 'fluxbox';
+    await new Promise((resolve) => setTimeout(resolve, 800));
+  }
+  state.xReady = true;
+  log('X (Xvfb + fluxbox) ready');
+}
+
+async function ensureVnc() {
+  await ensureX();
+  if (state.helpers.some((child) => child.__kind === 'x11vnc')) return;
+  const vnc = spawnHelper('x11vnc', ['-display', DISPLAY, '-rfbport', '5900', '-localhost', '-forever', '-shared', '-nopw']);
+  vnc.__kind = 'x11vnc';
+  const ws = spawnHelper('websockify', [`127.0.0.1:${NOVNC_PORT}`, '127.0.0.1:5900', '--web=/usr/share/novnc']);
+  ws.__kind = 'websockify';
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  log('noVNC (x11vnc + websockify) ready');
+}
+
+/** worker 模式：有头跑在 Xvfb 里（SDS 设计器要 WebGL，headless shell 给不出来），但不暴露 VNC */
 async function ensureHeadless() {
   if (state.browserMode === 'login') throw new Error('browser_in_login_mode');
   if (state.context && state.browserMode === 'headless') return state.context;
   if (state.context) await closeContext();
-  state.context = await launchPersistent({ headless: true });
+  await ensureX();
+  state.context = await launchPersistent({ headless: false });
   state.browserMode = 'headless';
-  log('headless browser ready');
+  log('worker browser ready (headed under Xvfb)');
   return state.context;
 }
 
@@ -116,21 +144,8 @@ function spawnHelper(command, args) {
 async function enterLoginMode() {
   if (state.browserMode === 'login') return { mode: 'login', novncUrl: novncUrl() };
   await closeContext();
-  if (!state.helpers.length) {
-    spawnHelper('Xvfb', [DISPLAY, '-screen', '0', '1440x1000x24', '-nolisten', 'tcp']);
-    await new Promise((resolve) => setTimeout(resolve, 1200));
-    spawnHelper('fluxbox', []);
-    spawnHelper('x11vnc', ['-display', DISPLAY, '-rfbport', '5900', '-localhost', '-forever', '-shared', '-nopw']);
-    spawnHelper('websockify', [`127.0.0.1:${NOVNC_PORT}`, '127.0.0.1:5900', '--web=/usr/share/novnc']);
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-  }
-  const { chromium } = await import('playwright');
-  state.context = await chromium.launchPersistentContext(PROFILE_PATH, {
-    headless: false,
-    locale: 'zh-CN',
-    env: { ...process.env, DISPLAY },
-    args: ['--no-sandbox', '--disable-dev-shm-usage']
-  });
+  await ensureVnc();
+  state.context = await launchPersistent({ headless: false });
   const page = state.context.pages()[0] || (await state.context.newPage());
   await page.goto(SDS_LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 90000 }).catch(() => {});
   state.browserMode = 'login';
@@ -147,10 +162,11 @@ function novncUrl() {
 
 async function exitLoginMode() {
   await closeContext();
-  for (const helper of state.helpers.splice(0)) {
+  /* 只收掉 VNC 相关的进程；Xvfb/fluxbox 留着给 worker 模式用 */
+  for (const helper of state.helpers.filter((child) => child.__kind === 'x11vnc' || child.__kind === 'websockify')) {
     try { helper.kill('SIGTERM'); } catch { /* ignore */ }
   }
-  state.browserMode = 'headless';
+  state.helpers = state.helpers.filter((child) => child.__kind === 'xvfb' || child.__kind === 'fluxbox');
   state.context = null;
   await ensureHeadless();
   return { mode: state.browserMode };
