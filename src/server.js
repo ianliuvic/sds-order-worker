@@ -70,6 +70,7 @@ async function launchPersistent({ headless }) {
 }
 
 async function ensureHeadless() {
+  if (state.browserMode === 'login') throw new Error('browser_in_login_mode');
   if (state.context && state.browserMode === 'headless') return state.context;
   if (state.context) await closeContext();
   state.context = await launchPersistent({ headless: true });
@@ -161,6 +162,14 @@ async function runJob(options = {}) {
   state.job = job;
   state.running = true;
   state.lastRunAt = job.startedAt;
+  if (state.browserMode === 'login') {
+    /* 人工登录期间绝不抢浏览器：抢了会把 noVNC 里的登录态打断 */
+    job.error = 'browser_in_login_mode';
+    job.finishedAt = new Date().toISOString();
+    state.running = false;
+    log('job skipped: browser is in login mode');
+    return job;
+  }
   log(`job ${job.id} start dryRun=${dryRun} limit=${limit}`);
   try {
     const intakes = await pod.pendingIntakes({ limit, includeUnordered });
@@ -358,6 +367,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && url.pathname === '/api/run') {
       if (!authorized(req)) return json(res, 401, { error: 'unauthorized' });
+      if (state.browserMode === 'login') return json(res, 409, { error: 'browser_in_login_mode', hint: '先 POST /api/browser-mode/worker 切回 headless' });
       if (state.running) return json(res, 409, { error: 'job_running', id: state.job?.id });
       const body = await readBody(req);
       state.running = true;
