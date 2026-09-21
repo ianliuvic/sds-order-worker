@@ -170,6 +170,7 @@ async function exitLoginMode() {
   }
   state.helpers = state.helpers.filter((child) => child.__kind === 'xvfb' || child.__kind === 'fluxbox');
   state.context = null;
+  state.browserMode = 'headless'; /* 必须先离开 login 模式，ensureHeadless 才肯启动 */
   await ensureHeadless();
   return { mode: state.browserMode };
 }
