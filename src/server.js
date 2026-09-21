@@ -230,7 +230,7 @@ async function runJob(options = {}) {
           designProductId: manifest?.designProductId ?? String(Number(intake.productId) + 1),
           fetchSide: (intakeId, sideId) => pod.sideBytes(intakeId, sideId)
         });
-        await page.close().catch(() => {});
+        await page.goto('about:blank').catch(() => {});
         const sds = { cartAddedAt: new Date().toISOString(), designerUrl: result.url, pieces: result.sides, carts: result.carts, screenshot: result.screenshot };
         await pod.reportSds(intake.id, { status: 'cart_added', sds });
         job.items.push({ ...plan, status: 'cart_added', sds });
@@ -286,8 +286,19 @@ function authorizedQuery(req, url) {
 
 async function currentPage() {
   if (!state.context) return null;
-  const pages = state.context.pages();
-  return pages[pages.length - 1] ?? null;
+  try {
+    if (state.context.pages().length === 0) {
+      /* 有头模式下关掉最后一个页面会让浏览器进程退出——按需补一个空白页 */
+      await state.context.newPage();
+    }
+    const pages = state.context.pages();
+    return pages[pages.length - 1] ?? null;
+  } catch (error) {
+    log(`[browser] context unusable (${String(error?.message || error).slice(0, 80)}), will relaunch`);
+    state.context = null;
+    state.browserMode = 'headless';
+    return null;
+  }
 }
 
 /* ---------------------- noVNC 反代（带 Basic Auth） ----------------------
