@@ -40,6 +40,21 @@ function log(...args) {
   console.log(`[worker ${new Date().toISOString()}]`, ...args);
 }
 
+/* 持久卷自检：boots.log 跨重启保留 => 卷挂上了（SDS 登录态也就能留住） */
+function storageProbe() {
+  const marker = path.join(STORAGE_PATH, 'boots.log');
+  try {
+    fs.mkdirSync(STORAGE_PATH, { recursive: true });
+    fs.appendFileSync(marker, `${new Date().toISOString()}\n`);
+    const lines = fs.readFileSync(marker, 'utf8').trim().split('\n').filter(Boolean);
+    return { path: STORAGE_PATH, persistent: lines.length > 1, firstBootAt: lines[0], boots: lines.length };
+  } catch (error) {
+    return { path: STORAGE_PATH, persistent: false, error: String(error?.message || error).slice(0, 200) };
+  }
+}
+
+const STORAGE = storageProbe();
+
 /* ----------------------------- 浏览器生命周期 ----------------------------- */
 async function launchPersistent({ headless }) {
   const { chromium } = await import('playwright');
@@ -294,6 +309,7 @@ const server = http.createServer(async (req, res) => {
         podApiKey: !!pod.key,
         helperProcesses: state.helpers.length,
         bootedAt: state.bootedAt,
+        storage: STORAGE,
         lastRunAt: state.lastRunAt,
         lastError: state.lastError,
         job: state.job ? { id: state.job.id, dryRun: state.job.dryRun, items: state.job.items.length, finishedAt: state.job.finishedAt } : null
