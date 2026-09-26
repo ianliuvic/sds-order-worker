@@ -106,15 +106,23 @@ async function dismissOverlays(page) {
 
 async function selectMode(page, kind) {
   const wanted = DESIGNER_MODE[kind] ?? DESIGNER_MODE.single;
-  return page.evaluate((label) => {
-    const groups = [...document.querySelectorAll('[class*="groupItem__style"]')];
-    const target = groups.find((el) => (el.textContent || '').includes(label));
-    if (!target) return 'group_not_found';
-    if (/active__/.test(target.innerHTML)) return 'already_active';
-    const clickable = target.querySelector('[class*="name__style"]') || target;
-    clickable.click();
-    return 'clicked';
-  }, wanted);
+  /* 模式分组是异步渲染的：页面刚打开时可能还没有 groupItem 节点，
+     直接判定 group_not_found 会导致 multi-piece（多拼）模板没有切过去。 */
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const result = await page.evaluate((label) => {
+      const groups = [...document.querySelectorAll('[class*="groupItem__style"]')];
+      if (!groups.length) return 'group_not_found';
+      const target = groups.find((el) => (el.textContent || '').includes(label));
+      if (!target) return 'label_not_found';
+      if (/active__/.test(target.innerHTML)) return 'already_active';
+      const clickable = target.querySelector('[class*="name__style"]') || target;
+      clickable.click();
+      return 'clicked';
+    }, wanted);
+    if (result === 'clicked' || result === 'already_active') return result;
+    await page.waitForTimeout(1500);
+  }
+  return 'group_not_found';
 }
 
 async function selectFace(page, name, index = 0) {
