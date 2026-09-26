@@ -53,8 +53,7 @@ async function canvasLayerCount(page) {
   });
 }
 
-async function clickByText(page, pattern, { exact = false, root = null } = {}) {
-  const handle = await page.evaluateHandle(
+async function clickByText(page, pattern, { exact = false, root = null } = {}) {  const handle = await page.evaluateHandle(
     ({ source, flags, exactMatch, rootSelector }) => {
       const re = new RegExp(source, flags);
       const scope = rootSelector ? document.querySelector(rootSelector) : document;
@@ -75,6 +74,34 @@ async function clickByText(page, pattern, { exact = false, root = null } = {}) {
   const value = await handle.jsonValue();
   await handle.dispose();
   return value;
+}
+
+/** SDS 首页会弹公告弹窗（如平台放假通知），遮罩会挡住「保存」「尺码」等真实点击，
+ *  表现为 locator.click 超时。先关掉所有可见的 antd 弹窗再继续。 */
+async function dismissOverlays(page) {
+  for (let round = 0; round < 4; round += 1) {
+    const modal = page.locator('.ant-modal:visible').first();
+    if (!(await modal.count().catch(() => 0))) return 'clear';
+    let closed = false;
+    const closers = [
+      modal.locator('.ant-modal-close').first(),
+      modal.locator('button').filter({ hasText: /^\s*(我知道了|知道了|确定|关闭|OK)\s*$/ }).first()
+    ];
+    for (const closer of closers) {
+      if (await closer.count().catch(() => 0)) {
+        try {
+          await closer.click({ timeout: 2500, force: true });
+          closed = true;
+          break;
+        } catch (error) {
+          /* 试下一个关闭入口 */
+        }
+      }
+    }
+    if (!closed) await page.keyboard.press('Escape').catch(() => {});
+    await page.waitForTimeout(600);
+  }
+  return 'clear';
 }
 
 async function selectMode(page, kind) {
@@ -133,6 +160,7 @@ async function uploadSide(page, { name, mime, buffer, fileName, index, expectLay
 
 async function saveDesign(page) {
   /* 同样是真实点击：DOM .click() 在 SDS 上不可靠 */
+  await dismissOverlays(page);
   const result = { clicked: false, confirmClicked: false, toasts: [] };
   const button = page.locator('button:visible').filter({ hasText: /^保\s*存$/ }).first();
   try {
@@ -140,7 +168,14 @@ async function saveDesign(page) {
     await button.click({ timeout: 10000 });
     result.clicked = true;
   } catch (error) {
-    result.error = String(error?.message || error).slice(0, 200);
+    /* 遮罩/动画还在时退回强制点击，SDS 的按钮逻辑仍由 React 处理 */
+    try {
+      await button.click({ timeout: 5000, force: true });
+      result.clicked = true;
+      result.forced = true;
+    } catch (forceError) {
+      result.error = String(forceError?.message || error?.message || forceError).slice(0, 200);
+    }
   }
   await page.waitForTimeout(2500);
   const confirm = page.locator('button:visible').filter({ hasText: /^确\s*认$/ }).first();
@@ -174,13 +209,19 @@ async function cartRowTexts(context) {
 
 async function selectSize(page, size) {
   /* 用真实点击（DOM 的 .click() 触发不了 SDS 的加购/选码逻辑） */
-  const chip = page.locator('[class*="sizeItem__style"]').filter({ hasText: new RegExp(`^${size}$`) }).first();
+  const chip = page.locator('[class*="sizeItem__style"]').filter({ hasText: new RegExp(`^\\s*${size}\\s*$`) }).first();
   try {
     await chip.waitFor({ state: 'visible', timeout: 10000 });
+    await chip.scrollIntoViewIfNeeded().catch(() => {});
     await chip.click({ timeout: 10000 });
     return true;
   } catch (error) {
-    return false;
+    try {
+      await chip.click({ timeout: 4000, force: true });
+      return true;
+    } catch (forceError) {
+      return false;
+    }
   }
 }
 
@@ -214,7 +255,13 @@ async function clickAddToCart(page, timeoutMs = 20000) {
     }
     await page.waitForTimeout(1000);
   }
-  return false;
+  /* 最后一次用强制点击兜底：遮罩残留时 Playwright 的可点性检查会挡住真实点击 */
+  try {
+    await button.click({ timeout: 5000, force: true });
+    return true;
+  } catch (error) {
+    return false;
+  }
 }
 
 /** 点完页脚「加入购物车」后 SDS 会弹一个 antd Popconfirm（素材尺寸不足，建议重新设计），
@@ -263,6 +310,7 @@ async function addToCart(page, { size, quantity }) {
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     result.attempts = attempt;
     await page.bringToFront().catch(() => {});
+    await dismissOverlays(page);
     const sizeOk = await selectSize(page, size);
     await page.waitForTimeout(800);
     const qtyOk = await setQuantity(page, quantity);
@@ -323,9 +371,11 @@ export async function runIntake(page, intake, cartLines, options = {}) {
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 90000 });
   await page.waitForTimeout(9000);
   await assertLoggedIn(page);
+  const overlays = await dismissOverlays(page);
 
   const mode = await selectMode(page, intake.modeKind);
   await page.waitForTimeout(4500);
+  await dismissOverlays(page);
 
   const sides = [];
   let sideIndex = 0;
@@ -355,5 +405,5 @@ export async function runIntake(page, intake, cartLines, options = {}) {
   const screenshot = path.join(shotDir, `${intake.id}-${Date.now()}.png`);
   await page.screenshot({ path: screenshot, fullPage: false }).catch(() => {});
 
-  return { url, mode, sides, saved, carts, screenshot, startedAt, finishedAt: new Date().toISOString(), sizes: SIZES };
+  return { url, mode, overlays, sides, saved, carts, screenshot, startedAt, finishedAt: new Date().toISOString(), sizes: SIZES };
 }
