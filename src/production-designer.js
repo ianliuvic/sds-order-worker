@@ -36,7 +36,13 @@ export async function uploadProductionSide(page, side, buffer, fileName, placeme
   const before=await page.evaluate(()=>window.__productionStore.canvasRef.canvas.getObjects().length);
   if(before!==0)throw new Error('production_target_not_empty');
   await page.getByText('上传',{exact:true}).first().click();
-  await page.locator('input[type=file]').first().setInputFiles({name:fileName,mimeType:side.mime||'image/png',buffer});
+  await page.locator('input[type=file]').first().waitFor({state:'attached'});
+  await page.evaluate(async ({base64,name,mime})=>{
+    const bytes=Uint8Array.from(atob(base64),c=>c.charCodeAt(0));
+    const transfer=new DataTransfer();transfer.items.add(new File([bytes],name,{type:mime}));
+    const input=document.querySelector('input[type=file]');input.files=transfer.files;
+    input.dispatchEvent(new Event('change',{bubbles:true}));
+  },{base64:buffer.toString('base64'),name:fileName,mime:side.mime||'image/png'});
   await page.waitForFunction(()=>window.__productionStore.canvasRef.canvas.getObjects().filter(o=>o.type==='image').length===1,null,{timeout:180000});
   const geometry=await page.evaluate(id=>{
     const s=window.__productionStore,c=s.canvasRef,l=s.data.layers.find(l=>String(l.id)===id),o=c.canvas.getObjects().find(o=>o.type==='image');
