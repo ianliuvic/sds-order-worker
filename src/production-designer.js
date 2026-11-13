@@ -37,15 +37,16 @@ export async function uploadProductionSide(page, side, buffer, fileName, placeme
   if(before!==0)throw new Error('production_target_not_empty');
   await page.getByText('上传',{exact:true}).first().click();
   await page.locator('input[type=file]').first().setInputFiles({name:fileName,mimeType:side.mime||'image/png',buffer});
-  await page.waitForFunction(()=>window.__productionStore.canvasRef.canvas.getObjects().filter(o=>o.type==='image').length===1,null,{timeout:60000});
+  await page.waitForFunction(()=>window.__productionStore.canvasRef.canvas.getObjects().filter(o=>o.type==='image').length===1,null,{timeout:180000});
   const geometry=await page.evaluate(id=>{
     const s=window.__productionStore,c=s.canvasRef,l=s.data.layers.find(l=>String(l.id)===id),o=c.canvas.getObjects().find(o=>o.type==='image');
     const p=s.previewRef;let rect;
     for(const key of ['getDesignLayerCorpSize','getDesignSideCorpSize'])if(typeof p?.[key]==='function'){try{rect=p[key](l);if(rect?.width>0)break}catch{}}
     if(!rect?.width)throw Error('official_crop_unavailable');
-    return {rect,width:o.width,height:o.height};
+    const url=new URL(o.sds?.originUrl||o.getSrc());
+    return {rect,width:o.width,height:o.height,thumbsZoom:Number(url.searchParams.get('thumbsZoom')||1),materialId:url.searchParams.get('material_id')};
   },side.sourceSideId);
-  if(geometry.width!==side.width||geometry.height!==side.height)throw new Error('uploaded_png_dimensions_changed');
+  if(!geometry.materialId||Math.abs(geometry.width*geometry.thumbsZoom-side.width)>2||Math.abs(geometry.height*geometry.thumbsZoom-side.height)>2)throw new Error('uploaded_png_dimensions_changed');
   const transform=placement(geometry.rect,geometry.width,geometry.height);
   const verified=await page.evaluate(({id,t})=>{
     const s=window.__productionStore,c=s.canvasRef;if(String(s.activeLayerId)!==id)throw Error('active_side_changed');
