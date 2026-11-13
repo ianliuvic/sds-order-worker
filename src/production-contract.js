@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+const productionSizes=JSON.parse(fs.readFileSync(new URL('./production-sizes.json',import.meta.url),'utf8'));
 export function productionPlan(intake, manifest) {
   const mode = manifest?.modes?.find(m => m.kind === intake.modeKind && (!intake.meta?.prototypeGroupId || String(m.prototypeGroupId) === String(intake.meta.prototypeGroupId)));
   if (!mode) throw new Error('production_template_not_found');
@@ -5,9 +7,10 @@ export function productionPlan(intake, manifest) {
   const expected = mode.sides || [], supplied = intake.sides || [];
   if (!expected.length || expected.length !== supplied.length || new Set(supplied.map(s => String(s.sideId))).size !== expected.length) throw new Error('production_sides_incomplete');
   const sides = expected.map(side => {
+    const designSize=side.designSize||productionSizes[`${intake.productId}:${mode.kind}:${side.id}`];
     const file = supplied.find(s => String(s.sideId) === String(side.id));
     if (!file || !(file.width > 0 && file.height > 0)) throw new Error('production_side_missing_or_invalid:' + side.id);
-    if (intake.source === 'wordpress_inquiry' && (file.mime !== 'image/png' || file.width !== side.designSize?.width || file.height !== side.designSize?.height)) throw new Error('production_png_size_mismatch:' + side.id);
+    if (intake.source === 'wordpress_inquiry' && (file.mime !== 'image/png' || file.width !== designSize?.width || file.height !== designSize?.height)) throw new Error('production_png_size_mismatch:' + side.id);
     if (Math.abs(file.width / file.height - side.previewWidth / side.previewHeight) > .005) throw new Error('production_side_aspect_mismatch:' + side.id);
     return {...file, sourceSideId: String(side.sourceSideId || side.id), previewWidth: side.previewWidth, previewHeight: side.previewHeight};
   });
