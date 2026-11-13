@@ -207,9 +207,8 @@ async function cartRowTexts(context) {
     page = await context.newPage();
     await page.goto(CART_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await page.waitForTimeout(4000);
-    return await page.evaluate(() => [...document.querySelectorAll('tr')]
-      .map((tr) => (tr.innerText || '').replace(/\s+/g, ' ').trim())
-      .filter((text) => text.length > 20));
+    return await page.evaluate(() => [...document.querySelectorAll('tr[data-row-key]')]
+      .map(tr=>({id:tr.getAttribute('data-row-key'),text:(tr.innerText||'').replace(/\s+/g,' ').trim(),size:(tr.querySelector('[class*="specCell"] [class*="cContent"]')?.textContent||'').split('/').pop().trim(),quantity:Number(tr.querySelector('input.ant-input-number-input')?.value)})));
   } catch (error) {
     return null;
   } finally {
@@ -368,8 +367,10 @@ async function addToCart(page, { size, quantity }) {
       afterClick: afterClickState,
       bodyHint: state.bodyHint
     });
-    if (after && baseline && after.length > baseline.length) {
+    const changes=after&&baseline?after.map(row=>({...row,delta:row.quantity-(baseline.find(old=>old.id===row.id)?.quantity||0)})).filter(row=>row.delta!==0):[];
+    if (changes.length===1&&changes[0].size===size&&changes[0].delta===quantity&&changes[0].text.includes('成品ID:')) {
       result.clicked = true;
+      result.verifiedRow=changes[0];
       result.cartRows = after;
       break;
     }
