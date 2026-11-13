@@ -17,3 +17,10 @@ test('placement preserves official crop instead of square stage',()=>{
  const p=placement({left:0,top:115.2,width:600,height:369.6},2000,1232);
  assert.equal(p.left,300);assert.equal(p.top,300);assert.ok(Math.abs(p.scaleX-.3)<1e-12);assert.ok(Math.abs(p.scaleY-.3)<1e-12);
 });
+test('BK2134 missing legacy sizes use SDS verified production dimensions',()=>{
+ const ids=['10054679','10054680','10054681','10054682'];
+ const manifest={designProductId:'8669',modes:[{kind:'single',prototypeGroupId:'7280',sides:ids.map(id=>({id,previewWidth:1200,previewHeight:840}))}]};
+ const intake={productId:'8668',source:'wordpress_inquiry',modeKind:'single',meta:{prototypeGroupId:'7280'},sides:ids.map(sideId=>({sideId,width:3000,height:2100,mime:'image/png'}))};
+ assert.equal(productionPlan(intake,manifest).sides.length,4);
+ assert.throws(()=>productionPlan({...intake,sides:intake.sides.map(s=>({...s,width:900,height:900}))},manifest));
+});

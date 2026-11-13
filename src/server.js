@@ -13,6 +13,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { PodApi } from './pod-api.js';
 import { runIntake } from './sds-driver.js';
+import { renderWordpressProduction } from './wp-production-renderer.js';
 
 const PORT = Number(process.env.PORT || 8080);
 const PROFILE_PATH = process.env.PROFILE_PATH || '/app/storage/browser-profile';
@@ -401,6 +402,12 @@ const server = http.createServer(async (req, res) => {
         return res.end();
       }
       return proxyVncHttp(req, res);
+    }
+    if(req.method==='POST'&&url.pathname==='/api/production/render'){
+      if(!authorized(req))return json(res,401,{error:'unauthorized'});
+      const body=await readBody(req);
+      try{return json(res,200,await renderWordpressProduction(body.snapshot));}
+      catch(e){return json(res,422,{error:String(e.message||e).slice(0,500)});}
     }
     if (req.method === 'GET' && url.pathname === '/health') {
       return json(res, 200, {
