@@ -33,8 +33,19 @@ export async function selectProductionTemplate(page, plan) {
   }
   await attachStore(page);
   await page.waitForFunction(ids=>{
-    const actual=window.__productionStore.data.layers.filter(l=>l.pageType==='normal').map(l=>String(l.id));
-    return actual.length===ids.length&&ids.every(id=>actual.includes(id));
+    // Template changes replace the React store asynchronously; the previous
+    // store remains readable but never receives the new template's layers.
+    for(const el of document.querySelectorAll('*')){
+      const key=Object.keys(el).find(k=>k.startsWith('__reactFiber')||k.startsWith('__reactInternalInstance'));
+      if(!key)continue;
+      for(let f=el[key],n=0;f&&n<14;f=f.return,n++){
+        const store=f.memoizedProps?.store;
+        if(!store?.data?.layers||!store.canvasRef)continue;
+        const actual=store.data.layers.filter(l=>l.pageType==='normal').map(l=>String(l.id));
+        if(actual.length===ids.length&&ids.every(id=>actual.includes(id))){window.__productionStore=store;return true;}
+      }
+    }
+    return false;
   },ids,{timeout:30000});
 }
 export async function uploadProductionSide(page, side, buffer, fileName, placement) {
