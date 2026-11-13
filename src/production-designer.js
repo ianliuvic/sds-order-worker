@@ -15,18 +15,27 @@ export async function attachStore(page) {
 export async function selectProductionTemplate(page, plan) {
   await attachStore(page);
   const name=plan.mode.templateName;
+  const ids=plan.sides.map(s=>s.sourceSideId);
+  const matches=()=>page.evaluate(ids=>{const actual=window.__productionStore.data.layers.filter(l=>l.pageType==='normal').map(l=>String(l.id));return actual.length===ids.length&&ids.every(id=>actual.includes(id));},ids);
+  if(await matches())return;
   const groups=page.locator('[class*="groupItem"] [class*="name__style"]');
+  await groups.first().waitFor({state:'attached',timeout:30000});
   if(await groups.count()) {
     if(!name)throw new Error('exact_template_name_missing');
     const labels=await groups.allTextContents();const index=labels.findIndex(s=>s.trim()===name.trim());
     if(index<0)throw new Error('exact_template_not_found');
-    await groups.nth(index).click();
+    const target=groups.filter({hasText:new RegExp('^'+name.trim().replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'$')}).locator('visible=true').first();
+    if(!(await target.isVisible())){
+      await page.locator('[class*="faces__style"] [class*="changeBtn__style"]:visible').filter({hasText:'切换模板'}).first().click();
+    }
+    await target.waitFor({state:'visible',timeout:15000});
+    await target.click();
   }
   await attachStore(page);
   await page.waitForFunction(ids=>{
     const actual=window.__productionStore.data.layers.filter(l=>l.pageType==='normal').map(l=>String(l.id));
     return actual.length===ids.length&&ids.every(id=>actual.includes(id));
-  },plan.sides.map(s=>s.sourceSideId),{timeout:30000});
+  },ids,{timeout:30000});
 }
 export async function uploadProductionSide(page, side, buffer, fileName, placement) {
   const index=await page.evaluate(id=>window.__productionStore.data.layers.filter(l=>l.pageType==='normal').findIndex(l=>String(l.id)===id),side.sourceSideId);
