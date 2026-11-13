@@ -37,12 +37,23 @@ export async function uploadProductionSide(page, side, buffer, fileName, placeme
   if(before!==0)throw new Error('production_target_not_empty');
   await page.getByText('上传',{exact:true}).first().click();
   await page.locator('input[type=file]').first().waitFor({state:'attached'});
-  await page.evaluate(async ({base64,name,mime})=>{
+  const transferFile=()=>page.evaluate(async ({base64,name,mime})=>{
     const bytes=Uint8Array.from(atob(base64),c=>c.charCodeAt(0));
     const transfer=new DataTransfer();transfer.items.add(new File([bytes],name,{type:mime}));
     const input=document.querySelector('input[type=file]');input.files=transfer.files;
     input.dispatchEvent(new Event('change',{bubbles:true}));
   },{base64:buffer.toString('base64'),name:fileName,mime:side.mime||'image/png'});
+  // SDS's first upload can stop after refreshing its OSS signature. Retry only
+  // when no upload POST was initiated; never duplicate an in-flight upload.
+  let signatureReady=false,uploadStarted=false;
+  const onResponse=r=>{if(r.url().includes('get_post_signature_to_image_for_oss_upload')&&r.ok())signatureReady=true;};
+  const onRequest=r=>{if(r.method()==='POST'&&(/aliyuncs\.com/.test(r.url())||r.url().includes('/materials/one')))uploadStarted=true;};
+  page.on('response',onResponse);page.on('request',onRequest);
+  try{
+    await transferFile();
+    await page.waitForTimeout(7000);
+    if(signatureReady&&!uploadStarted&&await page.evaluate(()=>window.__productionStore.canvasRef.canvas.getObjects().length===0))await transferFile();
+  }finally{page.off('response',onResponse);page.off('request',onRequest);}
   await page.waitForFunction(()=>window.__productionStore.canvasRef.canvas.getObjects().filter(o=>o.type==='image').length===1,null,{timeout:180000});
   const geometry=await page.evaluate(id=>{
     const s=window.__productionStore,c=s.canvasRef,l=s.data.layers.find(l=>String(l.id)===id),o=c.canvas.getObjects().find(o=>o.type==='image');
