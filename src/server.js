@@ -213,6 +213,7 @@ async function runJob(options = {}) {
     if (options.intakeId) {
       const single = await pod.getIntake(String(options.intakeId));
       if (!single) throw new Error('intake_not_found');
+      if(single.status==='cart_added')throw new Error('intake_already_fulfilled');
       if (!includeUnordered && !(single.orders ?? []).length) throw new Error('intake_has_no_order');
       intakes = [single];
     } else {
@@ -230,9 +231,12 @@ async function runJob(options = {}) {
         const context = await ensureHeadless();
         const page = context.pages()[0] || (await context.newPage());
         const result = await runIntake(page, intake, plan.cartLines, {
-          designProductId: manifest?.designProductId ?? String(Number(intake.productId) + 1),
+          manifest,
+          prepareOnly: !!options.prepareOnly,
+          designProductId: manifest?.designProductId,
           fetchSide: (intakeId, sideId) => pod.sideBytes(intakeId, sideId)
         });
+        if(options.prepareOnly){job.items.push({...plan,status:'prepared',result});continue;}
         await page.goto('about:blank').catch(() => {});
         const cartOk = (result.carts || []).length > 0 && (result.carts || []).every((cart) => cart.clicked);
         const sds = { cartAddedAt: new Date().toISOString(), designerUrl: result.url, mode: result.mode, saved: result.saved, pieces: result.sides, carts: result.carts, screenshot: result.screenshot };

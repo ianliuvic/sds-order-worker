@@ -1,5 +1,6 @@
 /** pod-api 客户端：取待交互的 intake、取拍平面、回写 SDS 结果 */
 const DEFAULT_BASE = 'https://pod-api.wearhongxiu.com';
+import {cartLines as productionCartLines} from './production-contract.js';
 
 export class PodApi {
   constructor(options = {}) {
@@ -27,6 +28,7 @@ export class PodApi {
     const items = list?.items ?? [];
     const detailed = [];
     for (const item of items) {
+      if(item.source === 'wordpress_inquiry') continue; // Human-trigger only, never scheduler.
       const detail = await this.getIntake(item.id);
       if (!detail) continue;
       if (!includeUnordered && !(detail.orders ?? []).length) continue;
@@ -64,12 +66,6 @@ export class PodApi {
 
   /** 把订单行按 尺码 -> 件数 汇总（同一尺码合并） */
   static cartLines(intake) {
-    const bySize = new Map();
-    for (const order of intake.orders ?? []) {
-      const size = String(order.size ?? '').trim() || 'M';
-      bySize.set(size, (bySize.get(size) ?? 0) + (Number(order.quantity) || 0));
-    }
-    if (!bySize.size) bySize.set('M', 1);
-    return [...bySize.entries()].map(([size, quantity]) => ({ size, quantity: Math.max(1, quantity) }));
+    return productionCartLines(intake);
   }
 }

@@ -5,6 +5,8 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import {productionPlan,placement} from './production-contract.js';
+import {selectProductionTemplate,uploadProductionSide} from './production-designer.js';
 
 const DESIGNER_MODE = { single: '多拼', all: '单图' };
 const SIZES = ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL'];
@@ -281,6 +283,7 @@ async function confirmPopconfirm(page, timeoutMs = 8000) {
     try {
       if (await pop.count() && await pop.isVisible()) {
         const text = ((await pop.innerText()) || '').replace(/\s+/g, ' ').trim().slice(0, 140);
+        if(!/尺寸不足|分辨率|打印效果/.test(text)) throw new Error('unrecognized_cart_confirmation');
         const confirm = pop.locator('button').filter({ hasText: /^加入购物车$/ }).first();
         let clicked = false;
         try {
@@ -322,6 +325,8 @@ async function addToCart(page, { size, quantity }) {
     const sizeOk = await selectSize(page, size);
     await page.waitForTimeout(800);
     const qtyOk = await setQuantity(page, quantity);
+    if(!sizeOk||!qtyOk)throw new Error('size_or_quantity_selection_failed');
+    if(Number(await qtyInput.inputValue())!==quantity)throw new Error('quantity_readback_mismatch');
     const state = await page.evaluate(() => ({
       activeSize: (() => {
         const active = [...document.querySelectorAll('[class*="sizeItem__style"]')].find((el) => /active__/.test(el.className || ''));
@@ -333,6 +338,7 @@ async function addToCart(page, { size, quantity }) {
       bodyHint: (document.body.innerText || '').replace(/\s+/g, ' ').slice(-160)
     }));
     const popupPromise = context.waitForEvent('page', { timeout: 25000 }).catch(() => null);
+    if(state.activeSize!==size)throw new Error('size_readback_mismatch');
     const buttonClicked = await clickAddToCart(page);
     const confirmation = buttonClicked ? await confirmPopconfirm(page) : { appeared: false };
     const popup = buttonClicked ? await popupPromise : null;
@@ -367,12 +373,15 @@ async function addToCart(page, { size, quantity }) {
       result.cartRows = after;
       break;
     }
+    // Never repeat an uncertain mutation: SDS may merge existing cart rows.
+    throw new Error('cart_result_uncertain_manual_review_required');
   }
   return result;
 }
 
 /** 跑一条 intake：注入所有片 → 保存 → 按订单尺码/数量加购物车 */
 export async function runIntake(page, intake, cartLines, options = {}) {
+  const plan=productionPlan(intake,options.manifest);
   const designProductId = options.designProductId;
   const startedAt = new Date().toISOString();
   const url = designerUrl(intake.productId, designProductId);
@@ -381,7 +390,8 @@ export async function runIntake(page, intake, cartLines, options = {}) {
   await assertLoggedIn(page);
   const overlays = await dismissOverlays(page);
 
-  const mode = await selectMode(page, intake.modeKind);
+  await selectProductionTemplate(page,plan);
+  const mode = {kind:intake.modeKind,templateName:plan.mode.templateName,prototypeGroupId:plan.mode.prototypeGroupId};
   await page.waitForTimeout(4500);
   await dismissOverlays(page);
 
@@ -389,24 +399,30 @@ export async function runIntake(page, intake, cartLines, options = {}) {
   let sideIndex = 0;
   let expectedLayers = await canvasLayerCount(page);
   if (expectedLayers === null) expectedLayers = 0;
-  for (const side of intake.sides ?? []) {
+  for (const side of plan.sides) {
     const buffer = await options.fetchSide(intake.id, side.sideId);
     expectedLayers = (expectedLayers ?? 0) + 1;
-    const result = await uploadSide(page, {
-      name: side.name || side.sideId,
-      mime: side.mime || 'image/png',
-      buffer,
-      fileName: `hx-${intake.id}-${side.sideId}.png`,
-      index: sideIndex,
-      expectLayers: expectedLayers
-    });
+    const result = await uploadProductionSide(page,side,buffer,`hx-${intake.id}-${side.sideId}.png`,placement);
     sideIndex += 1;
     sides.push({ sideId: side.sideId, name: side.name, ...result });
   }
 
+  if(options.prepareOnly)return {url,mode,overlays,sides,prepared:true,carts:[],startedAt,finishedAt:new Date().toISOString()};
   const saved = await saveDesign(page);
+  if(!saved.clicked)throw new Error('design_save_failed');
   const carts = [];
-  for (const line of cartLines) carts.push(await addToCart(page, line));
+  for (const line of cartLines) {
+    const journalDir=path.join(STORAGE_PATH,'production-journal');fs.mkdirSync(journalDir,{recursive:true});
+    const journalFile=path.join(journalDir,`${encodeURIComponent(intake.id)}-${encodeURIComponent(line.size)}.json`);
+    if(fs.existsSync(journalFile)){
+      const previous=JSON.parse(fs.readFileSync(journalFile,'utf8'));
+      if(previous.status==='confirmed'&&previous.quantity===line.quantity){carts.push(previous.result);continue;}
+      throw new Error('cart_attempt_requires_review:'+line.size);
+    }
+    fs.writeFileSync(journalFile,JSON.stringify({status:'attempting',...line,at:new Date().toISOString()}),{flag:'wx'});
+    const result=await addToCart(page,line);carts.push(result);
+    fs.writeFileSync(journalFile,JSON.stringify({status:'confirmed',...line,result,at:new Date().toISOString()}));
+  }
 
   const shotDir = path.join(STORAGE_PATH, 'shots');
   fs.mkdirSync(shotDir, { recursive: true });
