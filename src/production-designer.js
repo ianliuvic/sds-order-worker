@@ -1,4 +1,5 @@
 // Playwright page APIs only. No CDP attachment or local Chrome dependency.
+import { beginUploadProgress, waitForUploadedImage } from './upload-progress.js';
 export async function attachStore(page) {
   await page.waitForFunction(() => {
     for(const el of document.querySelectorAll('*')) {
@@ -70,11 +71,12 @@ export async function uploadProductionSide(page, side, buffer, fileName, placeme
   const onRequest=r=>{if(r.method()==='POST'&&(/aliyuncs\.com/.test(r.url())||r.url().includes('/materials/one')))uploadStarted=true;};
   page.on('response',onResponse);page.on('request',onRequest);
   try{
+    await beginUploadProgress(page, side.sourceSideId);
     await transferFile();
     await page.waitForTimeout(7000);
     if(signatureReady&&!uploadStarted&&await page.evaluate(()=>window.__productionStore.canvasRef.canvas.getObjects().length===0))await transferFile();
   }finally{page.off('response',onResponse);page.off('request',onRequest);}
-  await page.waitForFunction(()=>window.__productionStore.canvasRef.canvas.getObjects().filter(o=>o.type==='image').length===1,null,{timeout:180000});
+  await waitForUploadedImage(page, side.sourceSideId);
   const geometry=await page.evaluate(id=>{
     const s=window.__productionStore,c=s.canvasRef,l=s.data.layers.find(l=>String(l.id)===id),o=c.canvas.getObjects().find(o=>o.type==='image');
     const p=s.previewRef;let rect;
