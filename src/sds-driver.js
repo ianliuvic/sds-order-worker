@@ -208,7 +208,15 @@ async function cartRowTexts(context) {
     await page.goto(CART_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await page.waitForTimeout(4000);
     return await page.evaluate(() => [...document.querySelectorAll('tr[data-row-key]')]
-      .map(tr=>({id:tr.getAttribute('data-row-key'),text:(tr.innerText||'').replace(/\s+/g,' ').trim(),size:(tr.querySelector('[class*="specCell"] [class*="cContent"]')?.textContent||'').split('/').pop().trim(),quantity:Number(tr.querySelector('input.ant-input-number-input')?.value)})));
+      .map(tr=>{
+        const content=tr.querySelector('[class*="specCell"] [class*="cContent"]');
+        // SDS places printing-option descriptions inside cContent too. Read
+        // only the direct size span after the slash, never nested ctext.
+        const spans=content?[...content.children].filter(el=>el.tagName==='SPAN'):[];
+        const separator=spans.findIndex(el=>el.textContent.trim()==='/');
+        const size=separator>=0?(spans[separator+1]?.textContent||'').trim():'';
+        return {id:tr.getAttribute('data-row-key'),text:(tr.innerText||'').replace(/\s+/g,' ').trim(),size,quantity:Number(tr.querySelector('input.ant-input-number-input')?.value)};
+      }));
   } catch (error) {
     return null;
   } finally {
@@ -306,6 +314,7 @@ async function confirmPopconfirm(page, timeoutMs = 8000) {
 async function addToCart(page, { size, quantity }) {
   const context = page.context();
   const baseline = await cartRowTexts(context);
+  if(!baseline||baseline.some(row=>!row.size||!Number.isInteger(row.quantity)||row.quantity<1))throw new Error('cart_baseline_unreadable');
   const result = {
     size,
     quantity,
